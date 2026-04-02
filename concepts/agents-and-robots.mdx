@@ -1,0 +1,258 @@
+---
+title: "Agents and Robots"
+description: "Articulated agent architecture, available robot and humanoid implementations, sensor presets, and multi-agent configuration in Habitat-Lab."
+---
+
+Habitat-Lab supports embodied agents ranging from wheeled mobile manipulators to quadrupeds and kinematic humanoids. All agents are represented as **articulated objects** — collections of rigid links connected by joints — and share a common interface defined in `habitat/articulated_agents/`.
+
+---
+
+## Architecture
+
+The articulated agent system is layered:
+
+```
+ArticulatedAgentInterface       (habitat/articulated_agents/articulated_agent_interface.py)
+ └── MobileManipulator          (mobile_manipulator.py)  — kinematic base + arm
+      ├── FetchRobot             (robots/fetch_robot.py)
+      ├── SpotRobot              (robots/spot_robot.py)
+      ├── StretchRobot           (robots/stretch_robot.py)
+      └── KinematicHumanoid      (humanoids/kinematic_humanoid.py)
+ └── StaticManipulator          (static_manipulator.py)  — arm only, no mobile base
+      └── FrankaRobot            (robots/franka_robot.py)
+```
+
+`ArticulatedAgentInterface` defines the minimal API:
+
+| Method | Description |
+|---|---|
+| `reconfigure()` | Load the URDF into the scene and set initial joint states. |
+| `reset()` | Return joints and motors to initial state. |
+| `update()` | Sync camera transforms, joint limits, and sleep states each step. |
+| `get_robot_sim_id()` | Return the simulator object ID for this agent. |
+| `get_link_and_joint_names()` | Debug string listing all link/joint names and types. |
+
+The agent's physical state is backed by a `ManagedBulletArticulatedObject` from Habitat-Sim, accessible as `agent.sim_obj`.
+
+---
+
+## Available robots
+
+<CardGroup cols={2}>
+  <Card title="Fetch" icon="robot">
+    Mobile manipulator with a 7-DOF arm, parallel-jaw gripper, and differential-drive base. Three camera mount points: arm end-effector, head, and third-person. The primary robot for rearrangement benchmarks.
+  </Card>
+  <Card title="Spot" icon="robot">
+    Boston Dynamics quadruped with a mounted arm. Useful for tasks requiring stair climbing or uneven terrain navigation.
+  </Card>
+  <Card title="Stretch" icon="robot">
+    Hello Robot Stretch — a narrow-base mobile manipulator suited for environments with tight spaces. 10-DOF arm (extension, lift, wrist roll/pitch/yaw, camera pan/tilt).
+  </Card>
+  <Card title="Franka" icon="robot">
+    Static table-top manipulator (no mobile base). Based on `StaticManipulator`. Used for fixed-base manipulation research.
+  </Card>
+</CardGroup>
+
+Each robot is specified by a URDF file and a set of parameters defined directly in its Python class — joint indices, end-effector offsets, camera transforms, motor gains, and gripper open/close states.
+
+### Fetch parameter snapshot
+
+```python
+# From habitat/articulated_agents/robots/fetch_robot.py
+MobileManipulatorParams(
+    arm_joints=list(range(15, 22)),       # 7-DOF arm
+    gripper_joints=[23, 24],
+    wheel_joints=[2, 4],
+    arm_init_params=[-0.45, -1.08, 0.1, 0.935, -0.001, 1.573, 0.005],
+    cameras={
+        "articulated_agent_arm": ArticulatedAgentCameraParams(
+            cam_offset_pos=mn.Vector3(0, 0.0, 0.1),
+            cam_look_at_pos=mn.Vector3(0.1, 0.0, 0.0),
+            attached_link_id=22,
+        ),
+        "head": ArticulatedAgentCameraParams(
+            cam_offset_pos=mn.Vector3(0.25, 1.2, 0.0),
+            cam_look_at_pos=mn.Vector3(0.75, 1.0, 0.0),
+            attached_link_id=-1,  # -1 = attached to base
+        ),
+    },
+    arm_mtr_pos_gain=0.3,
+    arm_mtr_vel_gain=0.3,
+    arm_mtr_max_impulse=10.0,
+)
+```
+
+---
+
+## Humanoids
+
+Habitat-Lab includes a kinematic humanoid avatar defined in `habitat/articulated_agents/humanoids/kinematic_humanoid.py`.
+
+The humanoid has **20 links** and **17 spherical joints** matching the SMPL skeleton morphology (without hand or foot joints). It is controlled by directly setting joint rotations and the root object transform via `set_joint_transform`.
+
+Two high-level controllers are provided:
+
+<AccordionGroup>
+  <Accordion title="HumanoidRearrangeController">
+    Converts high-level navigation or pick-and-place commands into walk-cycle animations and reaching motions. Used for Social Navigation and Social Rearrangement tasks.
+
+    ```bash
+    python -m pytest test/test_humanoid.py::test_humanoid_controller
+    ```
+  </Accordion>
+  <Accordion title="SequentialPoseController">
+    Replays a pre-computed motion data file (from motion capture, an animation system, or a generative model) feed-forward.
+
+    ```bash
+    python -m pytest test/test_humanoid.py::test_humanoid_seqpose_controller
+    ```
+  </Accordion>
+</AccordionGroup>
+
+Download the humanoid asset:
+
+```bash
+python -m habitat_sim.utils.datasets_download \
+    --uids habitat_humanoids \
+    --data-path data/
+```
+
+---
+
+## Agent configuration
+
+Each agent in the simulator config specifies:
+
+- `articulated_agent_type` — the registered Python class name.
+- `articulated_agent_urdf` — path to the URDF asset file.
+- `radius` — collision radius used by the navmesh.
+- `sim_sensors` — dict of simulator sensors attached to the agent.
+
+```yaml
+# habitat/config/habitat/simulator/agents/fetch.yaml
+defaults:
+  - agent_base
+  - _self_
+
+radius: 0.3
+articulated_agent_type: FetchRobot
+articulated_agent_urdf: data/robots/hab_fetch/robots/hab_fetch.urdf
+ik_arm_urdf: data/robots/hab_fetch/robots/fetch_onlyarm.urdf
+```
+
+Agents are placed under `habitat.simulator.agents` in the config. The default agent key is `main_agent`:
+
+```yaml
+defaults:
+  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: fetch
+```
+
+---
+
+## Visual agent presets
+
+Three sensor presets are defined in `habitat/config/habitat/simulator/sensor_setups/`. Each preset bundles one or more 256×256 cameras and is applied on top of an agent config.
+
+<Tabs>
+  <Tab title="rgb_head_agent">
+    A single RGB camera mounted at the agent's head.
+
+    ```yaml
+    defaults:
+      - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgb_head_agent
+      - /habitat/simulator/agents@habitat.simulator.agents.main_agent: fetch
+    ```
+
+    Sensors added: `head_rgb_sensor`
+  </Tab>
+  <Tab title="depth_head_agent">
+    A single depth camera mounted at the agent's head.
+
+    ```yaml
+    defaults:
+      - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: depth_head_agent
+      - /habitat/simulator/agents@habitat.simulator.agents.main_agent: fetch
+    ```
+
+    Sensors added: `head_depth_sensor`
+  </Tab>
+  <Tab title="rgbd_head_rgbd_arm_agent">
+    RGB and depth cameras at both the head and the arm end-effector.
+
+    ```yaml
+    defaults:
+      - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbd_head_rgbd_arm_agent
+      - /habitat/simulator/agents@habitat.simulator.agents.main_agent: fetch
+    ```
+
+    Sensors added: `head_rgb_sensor`, `head_depth_sensor`, `arm_rgb_sensor`, `arm_depth_sensor`
+  </Tab>
+</Tabs>
+
+All presets use 256×256 resolution. To change resolution, override the individual sensor configs.
+
+---
+
+## Multi-agent setup
+
+Habitat-Lab supports multiple agents in the same scene. Each agent is registered under a distinct key in `habitat.simulator.agents` and gets its own sensor suite and action namespace.
+
+The following excerpt from `benchmark/multi_agent/hssd_spot_human_social_nav.yaml` configures a Spot robot (`agent_0`) and a humanoid (`agent_1`) together:
+
+```yaml
+defaults:
+  # Sensors for each agent
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.agent_0: spot_agent
+  - /habitat/simulator/agents@habitat.simulator.agents.agent_0: spot
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.agent_1: rgbd_head_agent
+  - /habitat/simulator/agents@habitat.simulator.agents.agent_1: human
+
+  # Actions namespaced by agent
+  - /habitat/task/actions@habitat.task.actions.agent_0_base_velocity: base_velocity_non_cylinder
+  - /habitat/task/actions@habitat.task.actions.agent_1_base_velocity: base_velocity
+  - /habitat/task/actions@habitat.task.actions.agent_1_rearrange_stop: rearrange_stop
+  - /habitat/task/actions@habitat.task.actions.agent_1_oracle_nav_action: oracle_nav_action
+```
+
+Action keys are prefixed with `agent_0_` or `agent_1_` to avoid collisions. Observations from each agent are similarly namespaced in the observation dict.
+
+### Multi-agent measurements
+
+Some measurements track cross-agent interaction:
+
+| Measurement | Description |
+|---|---|
+| `did_agents_collide` | `1.0` if any two agents collided this step. |
+| `num_agents_collide` | Count of agent–agent collision events. |
+| `social_nav_reward` | Reward signal for the social navigation task. |
+| `social_nav_seek_success` | Success criterion for the social navigation task. |
+
+<Tip>
+When building multi-agent experiments, use `agent_0_` and `agent_1_` prefixes consistently for both actions and sensors to keep the config readable and avoid key collisions.
+</Tip>
+
+---
+
+## Downloading robot assets
+
+```bash
+# Fetch robot
+python -m habitat_sim.utils.datasets_download \
+    --uids hab_fetch \
+    --data-path data/
+
+# Spot robot
+python -m habitat_sim.utils.datasets_download \
+    --uids hab_spot_arm \
+    --data-path data/
+
+# Stretch robot
+python -m habitat_sim.utils.datasets_download \
+    --uids hab_stretch \
+    --data-path data/
+
+# Humanoid
+python -m habitat_sim.utils.datasets_download \
+    --uids habitat_humanoids \
+    --data-path data/
+```

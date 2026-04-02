@@ -1,0 +1,525 @@
+---
+title: "Policies"
+description: "Policy base classes, PointNavResNetPolicy, actor-critic structure, visual encoder options, and how to implement a custom policy."
+---
+
+Policies in Habitat-Baselines define the agent's behavior: they map observations and recurrent hidden states to actions, value estimates, and log probabilities. All policies implement the abstract `Policy` interface and are registered in the baseline registry.
+
+```python
+from habitat_baselines.rl.ppo.policy import Policy, NetPolicy, PolicyActionData
+```
+
+---
+
+## Policy (abstract base class)
+
+`Policy` defines the interface every policy must implement.
+
+```python
+class Policy(abc.ABC):
+    def __init__(self, action_space): ...
+```
+
+<ParamField path="body.action_space" type="Space" required>
+  The gym action space for this policy.
+</ParamField>
+
+### Abstract methods
+
+#### act()
+
+```python
+@abc.abstractmethod
+def act(
+    self,
+    observations,
+    rnn_hidden_states,
+    prev_actions,
+    masks,
+    deterministic: bool = False,
+) -> PolicyActionData
+```
+
+Selects an action given the current observations and recurrent state.
+
+<ParamField path="body.observations" type="Dict[str, Tensor]" required>
+  Batch of current observations keyed by sensor name.
+</ParamField>
+
+<ParamField path="body.rnn_hidden_states" type="Tensor" required>
+  Shape `(num_recurrent_layers, num_envs, recurrent_hidden_size)`. Current RNN state.
+</ParamField>
+
+<ParamField path="body.prev_actions" type="Tensor" required>
+  Previous actions taken. Fed as input to the RNN at the next step.
+</ParamField>
+
+<ParamField path="body.masks" type="Tensor" required>
+  Shape `(num_envs, 1)`, dtype `bool`. `False` at episode boundaries to zero out hidden states.
+</ParamField>
+
+<ParamField path="body.deterministic" type="boolean" default="false">
+  If `True`, selects the mode/mean of the action distribution instead of sampling.
+</ParamField>
+
+<ResponseField name="return" type="PolicyActionData">
+  Dataclass containing actions, log probabilities, value predictions, and updated hidden states.
+</ResponseField>
+
+#### from_config()
+
+```python
+@classmethod
+@abc.abstractmethod
+def from_config(cls, config, observation_space, action_space, **kwargs) -> Policy
+```
+
+Factory method. All policies must implement this to support instantiation from Hydra configs via the baseline registry.
+
+### Other methods
+
+#### evaluate_actions()
+
+```python
+def evaluate_actions(
+    self,
+    observations,
+    rnn_hidden_states,
+    prev_actions,
+    masks,
+    action,
+    rnn_build_seq_info: Dict[str, Tensor],
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Dict[str, Tensor]]
+```
+
+Called during PPO updates to recompute values, log probs, and entropy for stored transitions. Returns a 5-tuple:
+
+<ResponseField name="[0] value" type="Tensor">
+  Value predictions for the given observations.
+</ResponseField>
+
+<ResponseField name="[1] action_log_probs" type="Tensor">
+  Log probability of `action` under the current policy.
+</ResponseField>
+
+<ResponseField name="[2] distribution_entropy" type="Tensor">
+  Entropy of the action distribution.
+</ResponseField>
+
+<ResponseField name="[3] rnn_hidden_states" type="Tensor">
+  Updated RNN hidden states.
+</ResponseField>
+
+<ResponseField name="[4] aux_loss_res" type="Dict[str, Tensor]">
+  Outputs from any registered auxiliary loss modules.
+</ResponseField>
+
+#### get_value()
+
+```python
+def get_value(
+    self,
+    observations,
+    rnn_hidden_states,
+    prev_actions,
+    masks,
+) -> Tensor
+```
+
+Returns the critic's value estimate without sampling an action. Used to bootstrap the final return in `RolloutStorage.compute_returns`.
+
+#### get_extra()
+
+```python
+def get_extra(
+    self,
+    action_data: PolicyActionData,
+    infos,
+    dones,
+) -> List[Dict[str, float]]
+```
+
+Returns per-environment logging information from the policy. Called during evaluation only. Returns an empty list if `action_data.policy_info` is `None`.
+
+#### on_envs_pause()
+
+```python
+def on_envs_pause(self, envs_to_pause: List[int]) -> None
+```
+
+Called when environments finish and are removed from the active set during evaluation. Override to clean up any per-environment state.
+
+---
+
+## PolicyActionData
+
+A dataclass returned by `Policy.act` containing all information about a sampled action.
+
+```python
+@dataclass
+class PolicyActionData:
+    rnn_hidden_states: Optional[Tensor] = None
+    actions: Optional[Tensor] = None
+    values: Optional[Tensor] = None
+    action_log_probs: Optional[Tensor] = None
+    take_actions: Optional[Tensor] = None
+    policy_info: Optional[List[Dict[str, Any]]] = None
+    should_inserts: Optional[BoolTensor] = None
+```
+
+<ResponseField name="actions" type="Optional[Tensor]">
+  Actions to store in the rollout buffer. Also the actions executed in the environment unless `take_actions` is set.
+</ResponseField>
+
+<ResponseField name="take_actions" type="Optional[Tensor]">
+  If set, these are the actions executed in the environment while `actions` are stored in the buffer. Allows learning from different actions than those executed.
+</ResponseField>
+
+<ResponseField name="values" type="Optional[Tensor]">
+  Value predictions from the critic.
+</ResponseField>
+
+<ResponseField name="action_log_probs" type="Optional[Tensor]">
+  Log probabilities of `actions` under the current policy.
+</ResponseField>
+
+<ResponseField name="rnn_hidden_states" type="Optional[Tensor]">
+  Updated RNN hidden states after processing this step.
+</ResponseField>
+
+<ResponseField name="should_inserts" type="Optional[BoolTensor]">
+  Shape `(num_envs, 1)`. If `False` for environment `i`, this transition is not written to the rollout buffer. `None` means write all.
+</ResponseField>
+
+<ResponseField name="policy_info" type="Optional[List[Dict[str, Any]]]">
+  Per-environment logging info. Returned by `get_extra()` during evaluation.
+</ResponseField>
+
+The `env_actions` property returns `take_actions` if set, otherwise `actions`:
+
+```python
+@property
+def env_actions(self) -> Tensor:
+    if self.take_actions is None:
+        return self.actions
+    else:
+        return self.take_actions
+```
+
+---
+
+## NetPolicy
+
+`NetPolicy` is the concrete base class for neural network policies. It combines a `Net` backbone with an action distribution head and a `CriticHead`.
+
+```python
+class NetPolicy(nn.Module, Policy):
+    def __init__(
+        self,
+        net: Net,
+        action_space,
+        policy_config=None,
+        aux_loss_config=None,
+    ): ...
+```
+
+<ParamField path="body.net" type="Net" required>
+  The network backbone. Must implement `output_size`, `num_recurrent_layers`, and `recurrent_hidden_size`.
+</ParamField>
+
+<ParamField path="body.action_space" type="Space" required>
+  The action space. Used to configure the action distribution head.
+</ParamField>
+
+<ParamField path="body.policy_config" type="DictConfig">
+  Policy-level configuration. The `action_distribution_type` field selects `"categorical"` (discrete) or `"gaussian"` (continuous) action distributions.
+</ParamField>
+
+<ParamField path="body.aux_loss_config" type="DictConfig">
+  Configuration for auxiliary loss modules. Each entry is instantiated and attached to `aux_loss_modules` (an `nn.ModuleDict`).
+</ParamField>
+
+### Actor-critic structure
+
+```
+observations ──► Net (visual encoder + RNN) ──► features
+                                                   │
+                              ┌────────────────────┤
+                              ▼                    ▼
+                      ActionDistribution       CriticHead
+                      (Categorical/Gaussian)   (Linear → 1)
+                              │
+                              ▼
+                          actions, log_probs, entropy
+```
+
+The `CriticHead` is a single linear layer with orthogonal initialization:
+
+```python
+class CriticHead(nn.Module):
+    def __init__(self, input_size):
+        self.fc = nn.Linear(input_size, 1)
+        nn.init.orthogonal_(self.fc.weight)
+        nn.init.constant_(self.fc.bias, 0)
+```
+
+---
+
+## PointNavResNetPolicy
+
+The primary policy for navigation tasks. Uses a ResNet visual encoder followed by a GRU/LSTM to produce actions for point-goal, object-goal, and image-goal navigation.
+
+```python
+from habitat_baselines.rl.ddppo.policy.resnet_policy import PointNavResNetPolicy
+```
+
+It is registered in the baseline registry and can be selected via config:
+
+```yaml
+habitat_baselines:
+  rl:
+    policy:
+      main_agent:
+        name: PointNavResNetPolicy
+```
+
+### Constructor
+
+```python
+PointNavResNetPolicy(
+    observation_space: spaces.Dict,
+    action_space,
+    hidden_size: int = 512,
+    num_recurrent_layers: int = 1,
+    rnn_type: str = "GRU",
+    resnet_baseplanes: int = 32,
+    backbone: str = "resnet18",
+    normalize_visual_inputs: bool = False,
+    force_blind_policy: bool = False,
+    policy_config: DictConfig = None,
+    aux_loss_config: Optional[DictConfig] = None,
+    fuse_keys: Optional[List[str]] = None,
+)
+```
+
+<ParamField path="body.hidden_size" type="int" default="512">
+  Hidden size of the GRU/LSTM and the size of the visual feature projection.
+</ParamField>
+
+<ParamField path="body.num_recurrent_layers" type="int" default="1">
+  Number of recurrent layers.
+</ParamField>
+
+<ParamField path="body.rnn_type" type="string" default="GRU">
+  Recurrent layer type. One of `"GRU"` or `"LSTM"`.
+</ParamField>
+
+<ParamField path="body.backbone" type="string" default="resnet18">
+  Visual encoder backbone. One of: `"resnet18"`, `"resnet50"`, `"resneXt50"`, `"se_resnet50"`, `"se_resneXt50"`, `"se_resneXt101"`, `"resnet50_clip_avgpool"`, `"resnet50_clip_attnpool"`.
+</ParamField>
+
+<ParamField path="body.normalize_visual_inputs" type="boolean" default="false">
+  Apply running mean/variance normalization to visual inputs before the ResNet.
+</ParamField>
+
+<ParamField path="body.force_blind_policy" type="boolean" default="false">
+  Ignore all visual observations and run a blind (non-visual) policy.
+</ParamField>
+
+<ParamField path="body.fuse_keys" type="Optional[List[str]]">
+  Explicit list of 1D observation keys to concatenate directly into the RNN input. If `None`, all non-goal 1D observations are fused automatically.
+</ParamField>
+
+### PointNavResNetNet
+
+`PointNavResNetPolicy` wraps `PointNavResNetNet`, which handles sensor-specific embedding logic:
+
+| Sensor | Embedding |
+|--------|-----------|
+| `pointgoal_with_gps_compass` | Linear → 32-dim |
+| `pointgoal` | Linear → 32-dim |
+| `objectgoal` | `nn.Embedding` → 32-dim |
+| `gps` | Linear → 32-dim |
+| `heading` | Linear → 32-dim |
+| `compass` | Linear (cos/sin) → 32-dim |
+| `proximity` | Linear → 32-dim |
+| `imagegoal` / `instance_imagegoal` | ResNet encoder → `hidden_size`-dim |
+| Previous action (discrete) | `nn.Embedding(n_actions+1, 32)` |
+| Previous action (continuous) | Linear → 32-dim |
+
+Visual observations (RGB/depth) are passed through `ResNetEncoder`, which applies average pooling, the chosen ResNet backbone, and a compression convolution to produce a flat 2048-element feature vector that is then projected.
+
+The `PRETRAINED_VISUAL_FEATURES_KEY = "visual_features"` constant identifies pre-computed visual features in the observation dict when `train_encoder=False` (frozen encoder mode).
+
+---
+
+## Visual encoder options
+
+<AccordionGroup>
+  <Accordion title="ResNetEncoder">
+    Standard ResNet encoder used by default. Takes multi-channel visual input (RGB and/or depth stacked), applies `avg_pool2d`, passes through the chosen ResNet backbone with Group Normalization, then compresses to a flat 2048-element feature vector.
+
+    ```python
+    from habitat_baselines.rl.ddppo.policy.resnet_policy import ResNetEncoder
+    ```
+
+    Supports `normalize_visual_inputs=True` to apply `RunningMeanAndVar` normalization before the backbone.
+  </Accordion>
+
+  <Accordion title="ResNetCLIPEncoder">
+    Uses a pretrained CLIP RN50 visual backbone. The backbone parameters are **frozen** (`requires_grad=False`) and run in eval mode. Pooling can be configured:
+
+    | Pooling mode | Output shape |
+    |---|---|
+    | `"attnpool"` (default) | `(1024,)` |
+    | `"avgpool"` | `(2048,)` |
+    | `"none"` | `(2048, 7, 7)` |
+
+    Requires `pip install git+https://github.com/openai/CLIP.git`.
+
+    ```python
+    from habitat_baselines.rl.ddppo.policy.resnet_policy import ResNetCLIPEncoder
+    ```
+  </Accordion>
+
+  <Accordion title="SimpleCNN">
+    A lightweight 3-layer CNN baseline encoder. Used by `PointNavBaselinePolicy` for simple experiments.
+
+    - Layer 1: Conv 8×8, stride 4×4
+    - Layer 2: Conv 4×4, stride 2×2
+    - Layer 3: Conv 3×3, stride 1×1
+    - Followed by a fully connected projection to `output_size`.
+
+    ```python
+    from habitat_baselines.rl.models.simple_cnn import SimpleCNN
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## PointNavBaselinePolicy
+
+A simpler navigation policy using `SimpleCNN` instead of ResNet.
+
+```python
+@baseline_registry.register_policy
+class PointNavBaselinePolicy(NetPolicy):
+    def __init__(
+        self,
+        observation_space: spaces.Dict,
+        action_space,
+        hidden_size: int = 512,
+        aux_loss_config=None,
+        **kwargs,
+    ): ...
+```
+
+Network architecture: `SimpleCNN` → goal encoding → GRU → `CriticHead` + action distribution.
+
+---
+
+## Hierarchical policy (HRL)
+
+`HierarchicalPolicy` implements a two-level hierarchy for rearrangement tasks using PDDL-based task planning.
+
+```python
+from habitat_baselines.rl.hrl.hierarchical_policy import HierarchicalPolicy
+```
+
+```yaml
+habitat_baselines:
+  rl:
+    policy:
+      main_agent:
+        name: HierarchicalPolicy
+```
+
+The architecture consists of:
+
+- **High-level policy** (`HighLevelPolicy`): decides which skill to execute based on the PDDL problem state.
+- **Skill policies** (`SkillPolicy`): low-level controllers (navigation, pick, place, etc.) each implemented as a `NetPolicy`.
+
+```
+observations
+     │
+     ▼
+HighLevelPolicy ──► skill index
+                          │
+                          ▼
+              SkillPolicy[skill_index] ──► actions
+```
+
+The `_cur_skills` array tracks which skill is active for each environment. The high-level policy is called whenever a skill terminates or at the first step of an episode.
+
+<Note>
+`HierarchicalPolicy` requires the `rearrange_stop` action to be present in the action space.
+</Note>
+
+---
+
+## Implementing a custom policy
+
+To register and use a custom policy, subclass `NetPolicy` and register it:
+
+```python
+from habitat_baselines.common.baseline_registry import baseline_registry
+from habitat_baselines.rl.ppo.policy import NetPolicy
+
+@baseline_registry.register_policy
+class MyCustomPolicy(NetPolicy):
+    def __init__(self, observation_space, action_space, hidden_size=512, **kwargs):
+        super().__init__(
+            MyCustomNet(observation_space, hidden_size),
+            action_space=action_space,
+        )
+
+    @classmethod
+    def from_config(cls, config, observation_space, action_space, **kwargs):
+        return cls(
+            observation_space=observation_space,
+            action_space=action_space,
+            hidden_size=config.habitat_baselines.rl.ppo.hidden_size,
+        )
+```
+
+The custom `Net` subclass must implement all abstract properties:
+
+```python
+from habitat_baselines.rl.ppo.policy import Net
+
+class MyCustomNet(Net):
+    @property
+    def output_size(self) -> int: ...        # Size of the features fed to the critic/action head
+
+    @property
+    def num_recurrent_layers(self) -> int: ...
+
+    @property
+    def recurrent_hidden_size(self) -> int: ...
+
+    @property
+    def is_blind(self) -> bool: ...          # True if no visual input
+
+    @property
+    def perception_embedding_size(self) -> int: ...  # Size of visual features
+
+    def forward(self, observations, rnn_hidden_states, prev_actions, masks,
+                rnn_build_seq_info=None):
+        # Returns: (features, rnn_hidden_states, aux_loss_state)
+        ...
+```
+
+Then select the policy in your config:
+
+```yaml
+habitat_baselines:
+  rl:
+    policy:
+      main_agent:
+        name: MyCustomPolicy
+```
+
+<Tip>
+If you want to freeze the visual encoder during training, implement the `visual_encoder` property on your `NetPolicy` to return the encoder module. The trainer will cache its output before the rollout loop when `train_encoder: False`.
+</Tip>

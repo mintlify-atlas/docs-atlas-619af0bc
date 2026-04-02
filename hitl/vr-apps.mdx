@@ -1,0 +1,219 @@
+---
+title: "VR HITL Applications"
+description: "Run Habitat HITL apps with a VR headset using a client/server model: a desktop machine runs the simulation server while a Meta Quest headset provides the immersive client."
+---
+
+VR HITL follows a client/server model. The **server** is a standard HITL desktop app (with a GUI window) running on your machine. The **client** is a Unity application deployed to a VR headset. The server streams a graphics replay to the client over WebSocket, and the client sends VR controller input back to the server.
+
+```
+┌─────────────────────────────────────┐      WebSocket (port 18000)
+│  Desktop machine (server)           │◄────────────────────────────┐
+│  - Habitat simulation               │                             │
+│  - Policy inference                 │────────────────────────────►│
+│  - pick_throw_vr.py + GUI window    │  gfx-replay keyframes       │  VR headset
+└─────────────────────────────────────┘  + navmesh data            │  (Meta Quest)
+                                         VR controller input ───────┘
+```
+
+The `pick_throw_vr` example app is the reference implementation for VR HITL.
+
+## Example: pick_throw_vr
+
+`pick_throw_vr` lets a user control a human avatar while a policy-driven Spot robot interacts with the scene. In VR mode the user is immersed in the Habitat environment; on the desktop the server still shows a 3D window with limited keyboard/mouse controls.
+
+The Spot robot policy moves around and picks up objects randomly. This is a proof-of-concept for building your own VR HITL application.
+
+## Requirements
+
+### Server (desktop machine)
+
+| Requirement | Notes |
+|---|---|
+| `habitat-sim` | Nightly conda build or built from source. Bullet physics required. |
+| Datasets | Run from the `habitat-lab` root: `python -m habitat_sim.utils.datasets_download --uids hab3-episodes habitat_humanoids hab_spot_arm ycb hssd-hab --data-path data/` |
+| `hssd-models` | Required for processing scene assets for Unity. Clone from [huggingface.co/datasets/hssd/hssd-models](https://huggingface.co/datasets/hssd/hssd-models). |
+
+### Client (VR headset)
+
+| Requirement | Notes |
+|---|---|
+| VR headset | Meta Quest 3 (recommended) or Quest Pro with ~300 MB free storage. Enable [developer mode](https://developer.oculus.com/documentation/native/android/mobile-device-setup/). Quest 2 may struggle with complex HSSD scenes. Other Unity-supported VR headsets should also work. |
+| Unity client | Clone [siro_hitl_unity_client](https://github.com/eundersander/siro_hitl_unity_client) and follow its installation instructions. A Unity license may be required by your organization. |
+
+## Running pick_throw_vr
+
+### Step 1: Start the server
+
+Enable networking to accept VR client connections:
+
+```bash
+# From habitat-lab/
+python examples/hitl/pick_throw_vr/pick_throw_vr.py \
+  habitat_hitl.networking.enable=True
+```
+
+The server listens on port `18000` by default. Once started, it waits for a client to connect before sending keyframes.
+
+<Tip>
+  You can still use keyboard/mouse on the desktop while the server is running. Press `T` to toggle between keyboard/mouse and VR control (only when not holding an object).
+</Tip>
+
+### Step 2: Process scene assets for Unity
+
+The Unity client needs its own copy of the 3D models. Habitat assets must be simplified before they run acceptably on a VR headset.
+
+First, install Magnum separately from your Habitat environment.
+
+<Tabs>
+  <Tab title="macOS (Homebrew)">
+    ```bash
+    # Follow magnum-bindings Homebrew installation, then verify:
+    python -c "from magnum import math, meshtools, scenetools, trade"
+    ```
+
+    See the [magnum-bindings Homebrew docs](https://doc.magnum.graphics/python/building/#homebrew-formulas-for-macos) for the full installation steps. You may also need the `magnum-plugins` formula.
+  </Tab>
+  <Tab title="Linux (conda)">
+    ```bash
+    # Create a separate conda environment for Magnum
+    conda create --name magnum python=3.10
+    conda activate magnum
+    ```
+
+    1. Download the latest `magnum-tools` Linux binaries from the [Magnum CI](https://github.com/mosra/magnum-ci/actions/workflows/magnum-tools.yml) — select the latest green run and download the artifact matching your system (e.g. `magnum-tools-v2020.06-...-linux-x64`).
+    2. Extract the archive to a convenient location.
+    3. Navigate to `~/anaconda/envs/magnum/lib/python3.10/site-packages/`.
+    4. Create a file named `magnum.pth` containing the absolute path to the `python/` folder inside your extracted Magnum tools directory:
+
+    ```
+    /home/USER/magnum-tools/linux-x64/python/
+    ```
+
+    5. Verify the install:
+
+    ```bash
+    python -c "from magnum import math, meshtools, scenetools, trade"
+    ```
+  </Tab>
+</Tabs>
+
+Then run the dataset processing script from the `habitat-lab` root directory:
+
+```bash
+python ./scripts/unity_dataset_processing/unity_dataset_processing.py \
+  --hssd-hab-root-dir data/scene_datasets/hssd-hab \
+  --hssd-models-root-dir path/to/hssd-models/objects \
+  --scenes 105515448_173104512
+```
+
+The processed assets are written to `data/hitl_simplified_data/`.
+
+### Step 3: Import assets into Unity
+
+1. Open the `siro_hitl_unity_client` project in the Unity Editor.
+2. From the menu, select **Tools > Update Data Folder...**.
+3. In the dialog, set **External Data Path** to the path of the generated `data/hitl_simplified/data` directory.
+4. Unity imports the assets into the project.
+
+### Step 4: Validate from the Unity Editor
+
+Before deploying to a headset, confirm that the connection works from the editor.
+
+<Steps>
+  <Step title="Start the HITL server">
+    Run the server launch command from Step 1 above.
+  </Step>
+  <Step title="Load the Unity scene">
+    In the Unity Editor, open `GfxReplayPlayerScene`.
+  </Step>
+  <Step title="Press Play">
+    After a short delay, the Unity client connects to your local server. Navigate in the Unity viewport using WASD and the mouse. The avatar's movements are reflected on the server.
+  </Step>
+</Steps>
+
+### Step 5: Deploy to a Quest headset
+
+<Steps>
+  <Step title="Switch build platform">
+    In Unity, go to **File > Build Settings**. Select **Android** from the platform list and click **Switch Platform**.
+  </Step>
+  <Step title="Connect your headset via USB">
+    Plug the Quest into your machine. Accept the authorization popup that appears in the headset.
+  </Step>
+  <Step title="Build and run">
+    In **Build Settings**, refresh the device list, select your headset from the dropdown, then click **Build and Run**. Choose any location for the build output.
+  </Step>
+  <Step title="Configure the server address">
+    After the app installs, it won't connect yet. On the headset, edit the config file at:
+    ```
+    Android/data/com.meta.siro_hitl_vr_client/files/config.txt
+    ```
+    Add your server's IP address (find it with `hostname -i`). The client rotates through all listed addresses until it connects. Save the file and relaunch `siro_hitl_vr_client`.
+  </Step>
+</Steps>
+
+## Server controls in VR mode
+
+| Key | Effect |
+|---|---|
+| `T` | Toggle between keyboard/mouse control and VR control (requires no held object) |
+| `ESC` | End episode and exit |
+| `P` | Pause / unpause |
+
+The on-screen help text on the server window shows the current control mode (`human control: keyboard` or `human control: VR`).
+
+## Networking configuration
+
+The `habitat_hitl.networking` section of `hitl_defaults.yaml` controls the VR server behavior:
+
+```yaml
+habitat_hitl:
+  networking:
+    enable: False           # Set True to accept VR client connections
+    max_client_count: 1     # Increase for multiplayer
+    port: 18000             # WebSocket port
+    discovery_server:
+      enable: True          # UDP broadcast for auto-discovery
+      port: 18200
+    http_availability_server:
+      enable: False         # AWS ELB health check endpoint
+      port: 18100
+```
+
+Override on the command line, for example to change the port:
+
+```bash
+python examples/hitl/pick_throw_vr/pick_throw_vr.py \
+  habitat_hitl.networking.enable=True \
+  habitat_hitl.networking.port=19000
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Client cannot connect to server">
+    - Verify that your server firewall allows inbound TCP connections on port `18000`.
+    - Check that `config.txt` on the headset contains the correct server IP address.
+    - Ensure both devices are on the same network. Corporate networks may block traffic — use a phone hotspot or a dedicated router if needed.
+    - Make sure only one server process is running on your machine.
+    - If using USB, confirm the Quest has authorized your machine.
+  </Accordion>
+  <Accordion title="Slow performance on the server (Mac)">
+    Disable Retina scaling. Use [displayplacer](https://github.com/jakehilborn/displayplacer):
+
+    ```bash
+    displayplacer list          # find a non-Retina 60 FPS mode
+    displayplacer "id:X mode:Y" # apply it
+    ```
+
+    Also ensure your laptop is plugged in to power.
+  </Accordion>
+  <Accordion title="Slow performance on the Quest headset">
+    - Quest Pro performance is limited. Try using smaller scenes or increase mesh simplification aggressiveness in `scripts/unity_dataset_processing/decimate.py`.
+    - On a busy network, switch to a phone hotspot or dedicated router.
+    - Grabbed objects may jitter because VR controller transforms are sent at a lower frequency than the simulation. This is expected behavior in the current implementation.
+  </Accordion>
+  <Accordion title="Deployment fails on Quest">
+    See the [siro_hitl_unity_client deployment troubleshooting guide](https://github.com/eundersander/siro_hitl_unity_client/blob/main/README.md#deployment-to-the-vr-headset) for Unity-specific deployment issues.
+  </Accordion>
+</AccordionGroup>

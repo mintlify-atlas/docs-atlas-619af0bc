@@ -1,0 +1,178 @@
+---
+title: "Imitation Learning"
+description: "Train embodied agents with imitation and supervised learning using the IL trainers in habitat-baselines, including EmbodiedQA models and the PACMAN navigation policy."
+---
+
+Habitat-baselines provides imitation learning (IL) trainers under `habitat_baselines/il/`. These trainers use supervised learning on expert demonstrations rather than RL reward signals. The canonical use case is **Embodied Question Answering (EQA)** from [Das et al., CVPR 2018](https://embodiedqa.org/paper.pdf), which uses a two-stage IL process to train a visual encoder, a VQA answering module, and a navigation policy.
+
+## Installation
+
+IL has its own requirements. Install them after the base package:
+
+```bash
+pip install -e habitat-lab
+pip install -e habitat-baselines
+```
+
+The IL sub-module requirements are in `habitat_baselines/il/requirements.txt`.
+
+## Available IL trainers
+
+The three registered trainers are in `habitat_baselines/il/trainers/`:
+
+| Trainer name | File | Task |
+| --- | --- | --- |
+| `eqa-cnn-pretrain` | `eqa_cnn_pretrain_trainer.py` | Encoder-decoder pretraining for visual feature extraction |
+| `vqa` | `vqa_trainer.py` | Visual question answering (predicts answer from question + images) |
+| `pacman` | `pacman_trainer.py` | Navigation to answer location (PACMAN policy) |
+
+Each trainer extends `BaseILTrainer` and is registered with `@baseline_registry.register_trainer(name=...)`.
+
+## EmbodiedQA training pipeline
+
+EQA training proceeds in three stages. Complete them in order since each stage's checkpoint feeds the next.
+
+<Steps>
+  <Step title="Train the EQA-CNN-Pretrain feature extractor">
+    The CNN encoder-decoder learns to reconstruct RGB, depth, and segmentation maps from scene observations. The encoder is then frozen and reused as a feature extractor in subsequent stages.
+
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=eqa/il_eqa_cnn_pretrain.yaml
+    ```
+
+    Checkpoints are written to `data/eqa/eqa_cnn_pretrain/checkpoints/`.
+    A pre-trained model is available [here](https://drive.google.com/drive/folders/1yO8Pnyt-oxqAz0ozxwyI3OcaFRiKZKgd?usp=sharing).
+
+    To evaluate:
+
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=eqa/il_eqa_cnn_pretrain.yaml \
+      habitat_baselines.evaluate=True
+    ```
+
+    Results are written to `data/eqa/eqa_cnn_pretrain/results/val/`.
+  </Step>
+
+  <Step title="Train the VQA answering model">
+    The VQA model takes the pre-trained CNN encoder features and predicts an answer given the question and a series of RGB images from the scene.
+
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=eqa/il_vqa.yaml
+    ```
+
+    By default this loads the CNN encoder checkpoint from `data/eqa/eqa_cnn_pretrain/checkpoints/epoch_5.ckpt`. Override with `eqa_cnn_pretrain_ckpt_path` in the config if you use a different checkpoint.
+
+    Checkpoints are written to `data/eqa/vqa/checkpoints/`.
+    A pre-trained VQA model is available [here](https://drive.google.com/file/d/1frhIlgF1BpBT_vnRt7J5txlnfvgwXLeq/view?usp=sharing).
+
+    To evaluate:
+
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=eqa/il_vqa.yaml \
+      habitat_baselines.evaluate=True
+    ```
+
+    Results are written to `data/eqa/vqa/results/val/`.
+  </Step>
+
+  <Step title="Train the NAV (PACMAN) navigation model">
+    PACMAN navigates the agent to the location needed to answer the question, conditioned on the question and visual input.
+
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=eqa/il_pacman_nav.yaml
+    ```
+
+    This also loads the pre-trained EQA CNN encoder from `data/eqa/eqa_cnn_pretrain/checkpoints/epoch_5.ckpt`.
+
+    Checkpoints are written to `data/eqa/nav/checkpoints/`.
+
+    To evaluate:
+
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=eqa/il_pacman_nav.yaml \
+      habitat_baselines.evaluate=True
+    ```
+
+    Results are written to `data/eqa/nav/results/val/`.
+  </Step>
+</Steps>
+
+## Prerequisites
+
+- Habitat-sim and Habitat-lab must be installed.
+- Download the **MatterPort3D scene dataset** and the **EQA task dataset** and place them in the directories expected by the config files.
+
+## Config structure for IL
+
+IL configs use the `habitat_baselines_il_config_base` base config instead of the RL base. The IL-specific options live under `habitat_baselines.il`:
+
+```yaml
+# @package _global_
+
+defaults:
+  - /habitat_baselines: habitat_baselines_il_config_base
+  - /benchmark/nav: eqa_mp3d
+  - _self_
+
+habitat_baselines:
+  trainer_name: "eqa-cnn-pretrain"
+  torch_gpu_id: 0
+  eval_ckpt_path_dir: "data/eqa/eqa_cnn_pretrain/checkpoints/epoch_5.ckpt"
+  checkpoint_folder: "data/eqa/eqa_cnn_pretrain/checkpoints"
+  tensorboard_dir: "data/eqa/eqa_cnn_pretrain/tb"
+  log_interval: 50
+  force_torch_single_threaded: True
+
+  il:
+    dataset_path: "data/datasets/eqa/eqa_cnn_pretrain/{split}/{split}.db"
+    results_dir: "data/eqa/eqa_cnn_pretrain/results/{split}/{type}"
+    log_metrics: True
+    output_log_dir: "data/eqa/eqa_cnn_pretrain/logs"
+    eval_save_results: True
+    eval_save_results_interval: 50
+    eqa_cnn_pretrain:
+      max_epochs: 5
+      batch_size: 20
+      lr: 1.0e-3
+```
+
+<Note>
+The `habitat_baselines_il_config_base` structured config (`HabitatBaselinesILConfig`) stores IL trainer options in `habitat_baselines.il` as a free-form `Dict[str, Any]`. Each IL trainer reads its own sub-keys from this dict.
+</Note>
+
+## IL config vs RL config
+
+| Aspect | RL (`habitat_baselines_rl_config_base`) | IL (`habitat_baselines_il_config_base`) |
+| --- | --- | --- |
+| Base class | `HabitatBaselinesRLConfig` | `HabitatBaselinesILConfig` |
+| Algorithm config | `habitat_baselines.rl` (PPO, DDPPO, VER) | `habitat_baselines.il` (trainer-specific) |
+| Typical loop | Rollout + policy update | Epoch-based supervised training |
+| Checkpoint trigger | After N gradient updates or N steps | After each epoch |
+
+## Using IL for skill training
+
+Pre-trained IL skills can be loaded into the [hierarchical RL policy](/training/hierarchical-rl) as low-level skills. Train a skill with any IL trainer, then point `load_ckpt_file` at the saved checkpoint:
+
+```yaml
+habitat_baselines:
+  rl:
+    policy:
+      main_agent:
+        hierarchical_policy:
+          defined_skills:
+            nav_to_obj:
+              skill_name: "NnSkillPolicy"
+              name: "PointNavResNetPolicy"
+              load_ckpt_file: "data/checkpoints/nav_il_skill.pth"
+              max_skill_steps: 300
+```
+
+<Tip>
+When loading IL-trained skills into an HRL setup, set `force_config_file` to override the config that was saved inside the checkpoint, and set `train_encoder: False` in the DD-PPO config to freeze the visual encoder.
+</Tip>

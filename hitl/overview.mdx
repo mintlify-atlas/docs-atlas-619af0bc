@@ -1,0 +1,181 @@
+---
+title: "Human-in-the-Loop (HITL) Overview"
+description: "Bring real human users into Habitat virtual environments to collect interaction data, evaluate agents, and run interactive tests."
+---
+
+The HITL framework places real human users inside Habitat virtual environments. You can use it to build interactive desktop and VR applications that let humans interact with simulated robots and other virtual agents. Deploy these apps to collect interaction data for agent evaluation and training.
+
+## Components
+
+<CardGroup cols={3}>
+  <Card title="habitat-hitl library" icon="puzzle-piece">
+    Python library providing environment wrappers, GUI components, and the AppState pattern for building HITL apps.
+  </Card>
+  <Card title="Desktop example apps" icon="desktop">
+    Ready-to-run keyboard/mouse applications covering basic viewing, object rearrangement, and interactive play.
+  </Card>
+  <Card title="Unity VR client" icon="vr-cardboard">
+    A Unity-based client for Meta Quest headsets that connects to a desktop HITL server over WebSocket.
+  </Card>
+</CardGroup>
+
+## Use cases
+
+- **Data collection**: Record human–robot interaction sessions as episode files (`.json.gz`) and graphics replay files (`.gfx_replay.json.gz`) for offline analysis or policy training.
+- **Agent evaluation**: Evaluate policy-controlled robots against real human collaborators, as used in the [Habitat 3.0 paper](https://arxiv.org/abs/2310.13724).
+- **Interactive testing**: Inspect Habitat environments and step agent policies in real time with a free-flying camera or user-controlled avatar.
+
+## System requirements
+
+| Component | Requirement |
+|---|---|
+| **Operating system** | macOS or Linux (Fedora tested; other distros should work) |
+| **CPU/GPU** | Apple M1 Pro/Max, Intel Core i7 + dedicated GPU, or equivalent |
+| **Display** | Physical monitor attached to a laptop or desktop. Remote desktop and headless setups are not tested. |
+| **Storage** | ~20 GB for Habitat dependencies and runtime data (HSSD, etc.), excluding OS and third-party libraries. A fresh Ubuntu machine needs ~60 GB total. |
+| **VR (optional)** | A desktop machine (above) plus a Meta Quest headset with developer mode enabled. |
+
+Example HITL apps target 30 steps per second (SPS). Systems below spec will see lower SPS and a degraded experience.
+
+## Installation
+
+<Steps>
+  <Step title="Clone habitat-lab">
+    Clone the `main` branch of [habitat-lab](https://github.com/facebookresearch/habitat-lab).
+  </Step>
+  <Step title="Install habitat-lab and habitat-baselines">
+    Follow the [habitat-lab installation instructions](https://github.com/facebookresearch/habitat-lab#installation). The HITL framework depends on both `habitat-lab` and `habitat-baselines`.
+  </Step>
+  <Step title="Install habitat-sim with Bullet physics">
+    Build from source or install the conda package. Bullet physics support is required.
+
+    ```bash
+    # Build from source with Bullet
+    HABITAT_WITH_BULLET=ON pip install . --no-build-isolation
+    ```
+
+    Alternatively, install the recommended conda package and ensure you select the Bullet-enabled variant.
+  </Step>
+  <Step title="Install habitat-hitl">
+    From the `habitat-lab` root directory:
+
+    ```bash
+    pip install -e habitat-hitl
+    ```
+
+    This installs the library along with its Python dependencies (`websockets`, `aiohttp`, `hydra-core`).
+  </Step>
+  <Step title="Download required assets">
+    Run the dataset downloader from the `habitat-lab` root directory:
+
+    ```bash
+    python -m habitat_sim.utils.datasets_download \
+      --uids hab3-episodes habitat_humanoids hab_spot_arm ycb hssd-hab \
+      --data-path data/
+    ```
+  </Step>
+</Steps>
+
+## Data directory setup
+
+HITL apps and the broader Habitat ecosystem expect a `data/` directory in your current working directory. You have two options:
+
+**Option 1 — Run from habitat-lab root (recommended for getting started)**
+
+Download data to `habitat-lab/data/` as shown above, then run apps from the `habitat-lab` directory:
+
+```bash
+# From habitat-lab/
+python examples/hitl/minimal/minimal.py
+```
+
+**Option 2 — Run from your own app directory**
+
+Download or symlink data to your app's root directory, then run from there:
+
+```bash
+# From /path/to/my_hitl_app/
+ln -s /path/to/habitat-lab/data data
+python my_hitl_app.py
+```
+
+<Note>
+  If `data/` is not found in the current directory, `hitl_main` raises a `FileNotFoundError` immediately on startup.
+</Note>
+
+## Architecture
+
+### AppState pattern
+
+Every HITL application is built around a class that subclasses `AppState`. Your subclass provides the application-specific logic: controls, camera, on-screen text, and data recording.
+
+```python
+from habitat_hitl.app_states.app_state_abc import AppState
+
+class AppState(ABC):
+    def sim_update(self, dt, post_sim_update_dict):
+        """
+        Called every frame before the GUI window is updated.
+        Set post_sim_update_dict["cam_transform"] here at a minimum.
+        """
+
+    def on_environment_reset(self, episode_recorder_dict):
+        """
+        Called when a new episode starts.
+        Reset internal state and optionally write per-episode metadata
+        to episode_recorder_dict.
+        """
+
+    def record_state(self):
+        """
+        Called on each environment step.
+        Use app_service.step_recorder here; this method is skipped
+        when data collection is disabled.
+        """
+```
+
+### hitl_main
+
+`hitl_main` is the entry point for all HITL apps. Pass it the Hydra config and a factory lambda that returns your `AppState`:
+
+```python
+from habitat_hitl.core.hitl_main import hitl_main
+
+def main(config):
+    hitl_main(config, lambda app_service: MyAppState(app_service))
+```
+
+Internally, `hitl_main` checks for `data/`, reads `habitat_hitl` config, and dispatches to either:
+
+- **`hitl_headed_main`**: opens a GLFW window via Magnum, creates a `LabDriver` or `SimDriver`, and runs the interactive event loop.
+- **`hitl_headless_main`**: runs without a GUI, useful for unit tests and headless servers with `habitat_hitl.networking.enable=True`.
+
+### Internal components
+
+| Component | Role |
+|---|---|
+| `LabDriver` | Wraps `habitat.Env`, steps the simulation, provides `gui_input` and `debug_line_render` to the `AppState`. |
+| `SimDriver` | Like `LabDriver` but wraps only `habitat-sim`, without a full `habitat-lab` environment. |
+| `GuiApplication` | Manages the OS window via GLFW and dispatches keyboard/mouse events. |
+| `ReplayGuiAppRenderer` | Renders the scene from the camera pose in `post_sim_update_dict`, plus debug lines, debug images, and on-screen text. Application-agnostic. |
+
+### Configuration
+
+HITL apps use [Hydra](https://hydra.cc) for configuration. The framework ships with `hitl_defaults.yaml` which sets sensible defaults:
+
+```yaml
+habitat_hitl:
+  driver: "LabDriver"
+  window:
+    title: "Habitat HITL Application"
+    width: 1280
+    height: 720
+  networking:
+    enable: False
+    port: 18000
+  target_sps: 30
+  camera:
+    first_person_mode: False
+```
+
+Override any value on the command line or in your app's own YAML config. See [`hitl_defaults.yaml`](https://github.com/facebookresearch/habitat-lab/blob/main/habitat-hitl/habitat_hitl/config/hitl_defaults.yaml) and [habitat-lab config README](https://github.com/facebookresearch/habitat-lab/blob/main/habitat-lab/habitat/config/README.md) for the full reference.

@@ -1,0 +1,223 @@
+---
+title: "Desktop HITL Applications"
+description: "Build and run keyboard/mouse HITL apps that let users interact with Habitat environments from a desktop window."
+---
+
+Desktop HITL apps run in a headed GLFW window on macOS or Linux. The user controls a camera or avatar with keyboard and mouse while the simulation steps in real time. All desktop apps are built using the same [AppState pattern](/hitl/overview#appstate-pattern) and `hitl_main` entry point.
+
+## Example apps
+
+The repository includes several ready-to-run desktop applications under `examples/hitl/`:
+
+<CardGroup cols={2}>
+  <Card title="minimal" icon="circle-play">
+    Loads a Habitat environment with a fixed overhead camera. The simplest possible HITL app. Good starting point for new apps.
+  </Card>
+  <Card title="basic_viewer" icon="eye">
+    Free-flying camera to inspect environments, episodes, and agent policy evaluation in real time. Supports episode filtering.
+  </Card>
+  <Card title="rearrange" icon="arrows-rotate">
+    User-controlled human and policy-controlled Spot robot collaborate on a rearrangement task in HSSD scenes. Saves session data files on exit.
+  </Card>
+  <Card title="pick_throw_vr" icon="hand">
+    User controls a human avatar (mouse/keyboard or VR) while a policy-driven Spot robot interacts with the scene. Also supports VR mode — see [VR apps](/hitl/vr-apps).
+  </Card>
+  <Card title="sim_viewer" icon="cube">
+    Minimal viewer using only `habitat-sim` (no `habitat-lab` environment). Useful for loading and inspecting individual scenes.
+  </Card>
+  <Card title="rearrange_v2" icon="flask">
+    Experimental app for evaluating rearrangement experiments with the partnr-planner. Supports single-user, multi-user, and user-agent settings.
+  </Card>
+</CardGroup>
+
+## Running the example apps
+
+Run all commands from the `habitat-lab` root directory.
+
+<CodeGroup>
+
+```bash minimal
+python examples/hitl/minimal/minimal.py
+```
+
+```bash basic_viewer
+# Filter to specific episodes using range syntax: single IDs, slices, or steps
+python examples/hitl/basic_viewer/basic_viewer.py \
+  habitat_hitl.episodes_filter='0 2 4 10:15 1000:4000:500'
+```
+
+```bash rearrange
+python examples/hitl/rearrange/rearrange.py
+```
+
+```bash pick_throw_vr
+python examples/hitl/pick_throw_vr/pick_throw_vr.py
+```
+
+```bash sim_viewer
+python examples/hitl/sim_viewer/sim_viewer.py
+```
+
+</CodeGroup>
+
+## Key controls
+
+Controls are shown as on-screen help text in each app. The common controls across desktop apps are:
+
+| Key / Action | Effect |
+|---|---|
+| `ESC` | Exit the app (also saves session data if collection is enabled) |
+| `R` + drag | Rotate the camera |
+| Scroll wheel | Zoom in / out |
+| `W` / `S` | Move camera / avatar forward / backward |
+| `A` / `D` | Turn camera / avatar left / right |
+| `E` / `Q` | Move camera up / down |
+| `P` | Pause / unpause simulation |
+| `Spacebar` | Single-step (basic_viewer) or pick up / throw object (pick_throw_vr) |
+| `M` | Advance to the next episode (basic_viewer) |
+| `H` | Show / hide on-screen help text |
+| `1`–`5` | Jump to a specific scene (pick_throw_vr) |
+| Right-click | Walk to clicked location (pick_throw_vr) |
+| `T` | Toggle keyboard/mouse vs. VR control (pick_throw_vr with networking) |
+
+## Building a minimal HITL app
+
+The minimal app is a good template. It has three parts: a Hydra config file, a Python file, and a working `data/` directory.
+
+### 1. Hydra config
+
+```yaml
+# minimal_cfg.yaml
+# @package _global_
+
+defaults:
+  # Load the pop_play baseline: Spot robot + humanoid in HSSD scenes.
+  - social_rearrange: pop_play
+  # Load HITL framework defaults.
+  - hitl_defaults
+  - _self_
+```
+
+The `hitl_defaults` entry loads `habitat-hitl/habitat_hitl/config/hitl_defaults.yaml`, which sets the window size, target SPS, networking, and camera defaults. Add your own keys after `- _self_` to override them.
+
+### 2. AppState subclass and entry point
+
+```python
+# minimal.py
+import hydra
+import magnum
+
+from habitat_hitl.app_states.app_service import AppService
+from habitat_hitl.app_states.app_state_abc import AppState
+from habitat_hitl.core.hitl_main import hitl_main
+from habitat_hitl.core.hydra_utils import register_hydra_plugins
+from habitat_hitl.core.key_mapping import KeyCode
+
+
+class AppStateMinimal(AppState):
+    """
+    A minimal HITL app that loads and steps a Habitat environment,
+    with a fixed overhead camera.
+    """
+
+    def __init__(self, app_service: AppService):
+        self._app_service = app_service
+
+    def sim_update(self, dt, post_sim_update_dict):
+        """
+        Called every frame before the GUI window is rendered.
+        """
+        # Step the environment until the episode ends.
+        if not self._app_service.env.episode_over:
+            self._app_service.compute_action_and_step_env()
+
+        # Set the camera transform for the main 3D viewport.
+        post_sim_update_dict["cam_transform"] = magnum.Matrix4.look_at(
+            eye=magnum.Vector3(-20, 20, -20),
+            target=magnum.Vector3(0, 0, 0),
+            up=magnum.Vector3(0, 1, 0),
+        )
+
+        # Exit on ESC.
+        if self._app_service.gui_input.get_key_down(KeyCode.ESC):
+            post_sim_update_dict["application_exit"] = True
+
+
+@hydra.main(version_base=None, config_path="./", config_name="minimal_cfg")
+def main(config):
+    hitl_main(config, lambda app_service: AppStateMinimal(app_service))
+
+
+if __name__ == "__main__":
+    register_hydra_plugins()
+    main()
+```
+
+### 3. Run it
+
+```bash
+# From habitat-lab/
+python examples/hitl/minimal/minimal.py
+```
+
+<Tip>
+  To create your own app, copy an existing example folder (e.g. `examples/hitl/pick_throw_vr/`) into your own repository. This gives you the config, the Python entry point, and any helper classes to start from.
+</Tip>
+
+## AppState hooks
+
+Your `AppState` subclass can implement three hooks:
+
+| Hook | When called | Common uses |
+|---|---|---|
+| `sim_update(dt, post_sim_update_dict)` | Every frame | Step the env, update camera, read input, draw debug lines |
+| `on_environment_reset(episode_recorder_dict)` | Each new episode | Reset internal state, write per-episode metadata |
+| `record_state()` | Each environment step | Write per-step data via `app_service.step_recorder`; skipped when recording is off |
+
+At minimum, `sim_update` must write `post_sim_update_dict["cam_transform"]` so the renderer knows where to place the camera.
+
+## Configuration via Hydra
+
+Override any config key on the command line:
+
+```bash
+# Change window size
+python examples/hitl/basic_viewer/basic_viewer.py \
+  habitat_hitl.window.width=1920 \
+  habitat_hitl.window.height=1080
+
+# Enable first-person camera mode
+python examples/hitl/pick_throw_vr/pick_throw_vr.py \
+  habitat_hitl.camera.first_person_mode=True \
+  habitat_hitl.hide_humanoid_in_gui=True
+
+# Disable policies (useful for testing on low-power machines)
+python examples/hitl/minimal/minimal.py \
+  habitat_hitl.disable_policies_and_stepping=True
+```
+
+### Data collection
+
+Enable session recording to save episode data and graphics replays:
+
+```bash
+python examples/hitl/rearrange/rearrange.py \
+  habitat_hitl.data_collection.save_filepath_base=output/my_session \
+  habitat_hitl.data_collection.save_episode_record=True \
+  habitat_hitl.data_collection.save_gfx_replay_keyframes=True
+```
+
+This produces files like `output/my_session.0.json.gz` (episode data) and `output/my_session.gfx_replay.json.gz` (replay). See `habitat-hitl/habitat_hitl/scripts/test_episode_save_files.py` for an example of reading these files.
+
+### Headless mode
+
+Run without a GUI window for unit testing or as a headless networking server:
+
+```bash
+python examples/hitl/pick_throw_vr/pick_throw_vr.py \
+  +experiment=headless_server
+```
+
+<Warning>
+  Headless mode requires `habitat_hitl.window` to be `null` in the config. The `headless_server` experiment config handles this automatically.
+</Warning>

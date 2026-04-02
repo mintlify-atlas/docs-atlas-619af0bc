@@ -1,0 +1,381 @@
+---
+title: "Multi-Agent Tasks (Habitat 3.0)"
+description: "Social navigation and collaborative rearrangement tasks with robots and humanoid avatars in Habitat 3.0."
+---
+
+Habitat 3.0 introduces co-habitat scenarios where robots and humanoid avatars share a living space. Two primary benchmarks are provided: **Social Navigation** (a Spot robot follows a walking humanoid) and **Social Rearrangement** (a Spot robot and a humanoid collaboratively tidy a house).
+
+<Note>
+Multi-agent tasks require the HSSD scene dataset and Habitat 3.0 episode data. Download all required assets before running:
+
+```bash
+python -m habitat_sim.utils.datasets_download \
+  --uids hssd-hab hab3-episodes habitat_humanoids hab3_bench_assets
+```
+</Note>
+
+---
+
+## Overview
+
+Habitat 3.0 supports scenarios with heterogeneous agents — a mobile manipulation robot (`agent_0`) and a humanoid avatar (`agent_1`) — operating in the same scene. Each agent has its own:
+
+- **Sensor suite** (RGB/depth cameras, proprioception)
+- **Action space** (velocity commands, joint control)
+- **Observation prefix** (e.g. `agent_0_*`, `agent_1_*`)
+
+The simulator type for all multi-agent tasks is `RearrangeSim-v0` with `kinematic_mode: True` to support sim-to-real transfer.
+
+---
+
+## Social Navigation
+
+In the Social Navigation task, a Boston Dynamics Spot robot must find and follow a walking humanoid. The humanoid moves autonomously using oracle navigation toward random waypoints. The robot policy must locate the human and maintain a safe following distance.
+
+**Task type:** `RearrangePddlSocialNavTask-v0`  
+**Config:** `benchmark/multi_agent/hssd_spot_human_social_nav.yaml`
+
+### Agents
+
+| Agent | Role | Sensor setup |
+|---|---|---|
+| `agent_0` (Spot) | Trainable policy | Arm depth, stereo depth, humanoid detector |
+| `agent_1` (Humanoid) | Fixed oracle policy | RGBD head camera |
+
+### Observations
+
+The Spot robot's policy receives the following observations (defined under `habitat.gym.obs_keys` with prefix `agent_0`):
+
+| Key | Description |
+|---|---|
+| `agent_0_articulated_agent_arm_depth` | Arm-mounted depth camera image |
+| `agent_0_spot_head_stereo_depth_sensor` | Spot's body stereo depth image |
+| `agent_0_humanoid_detector_sensor` | Humanoid detector (bounding box or segmentation mask) |
+
+The humanoid (`agent_1`) provides additional context observations:
+
+| Key | Description |
+|---|---|
+| `agent_1_head_depth` | Humanoid's head depth camera |
+| `agent_1_relative_resting_position` | Object position relative to resting state |
+| `agent_1_other_agent_gps` | GPS location of the other agent |
+| `agent_1_localization_sensor` | Agent's localization in the scene |
+
+<Tip>
+You can add more observations to the Spot policy by appending keys to `habitat.gym.obs_keys`. For example, add `agent_0_goal_to_agent_gps_compass` for a GPS compass pointing to the human, or `agent_0_articulated_agent_arm_rgb` for an RGB arm camera. Any key you add must also appear in `/habitat/task/lab_sensors`.
+</Tip>
+
+### Action space
+
+The robot uses `BaseVelocityNonCylinderAction` with linear and angular velocity:
+
+```yaml
+# From hssd_spot_human_social_nav.yaml
+habitat:
+  task:
+    actions:
+      agent_0_base_velocity:
+        type: BaseVelocityNonCylinderAction
+        lin_speed: 40.0
+        longitudinal_lin_speed: 5.0
+        lateral_lin_speed: 5.0
+        ang_speed: 5.0
+        allow_dyn_slide: True
+        enable_lateral_move: False
+        collision_threshold: 1e-5
+```
+
+The humanoid is driven by an oracle navigation action that walks toward random coordinates:
+
+```yaml
+      agent_1_oracle_nav_randcoord_action:
+        type: OracleNavRandCoordAction
+        motion_control: human_joints
+        lin_speed: 5.0
+        ang_speed: 5.0
+```
+
+### Reward and success
+
+```yaml
+habitat:
+  task:
+    type: RearrangePddlSocialNavTask-v0
+    reward_measure: social_nav_reward
+    success_measure: nav_seek_success
+    success_reward: 10.0
+    slack_reward: -0.01
+    end_on_success: False
+    min_start_distance: 4.0
+    min_distance_start_agents: 5.0
+
+    measurements:
+      social_nav_reward:
+        facing_human_reward: 0.01
+        count_coll_pen: 0.01
+        max_count_colls: 1000
+        count_coll_end_pen: 1.0
+      social_nav_seek_success:
+        must_look_at_targ: False
+        following_step_succ_threshold: 500
+        need_to_face_human: True
+```
+
+**Evaluation metrics:**
+
+| Metric | Description |
+|---|---|
+| `social_nav_stats.has_found_human` | Whether the robot found the human during the episode |
+| `social_nav_stats.found_human_rate_after_encounter_over_epi` | Fraction of steps following the human after first encounter |
+| `social_nav_stats.first_encounter_steps` | Steps until first encounter with the human |
+| `social_nav_stats.avg_robot_to_human_after_encounter_dis_over_epi` | Average distance to human after encounter |
+| `num_agents_collide` | Number of robot–human collisions |
+
+### Training command
+
+```bash
+python -u -m habitat_baselines.run \
+    --config-name=social_nav/social_nav.yaml \
+    benchmark/multi_agent=hssd_spot_human_social_nav \
+    habitat_baselines.evaluate=False \
+    habitat_baselines.num_checkpoints=5000 \
+    habitat_baselines.total_num_steps=1.0e9 \
+    habitat_baselines.num_environments=24 \
+    habitat_baselines.tensorboard_dir=tb_social_nav \
+    habitat_baselines.checkpoint_folder=checkpoints_social_nav \
+    habitat.task.actions.agent_0_base_velocity.longitudinal_lin_speed=10.0 \
+    habitat.task.actions.agent_0_base_velocity.ang_speed=10.0 \
+    habitat.task.actions.agent_0_base_velocity.allow_dyn_slide=True \
+    habitat.task.measurements.social_nav_reward.facing_human_reward=3.0 \
+    habitat.task.measurements.social_nav_reward.use_geo_distance=True \
+    habitat.task.measurements.social_nav_reward.facing_human_dis=3.0 \
+    habitat.task.measurements.social_nav_seek_success.following_step_succ_threshold=400 \
+    habitat.task.measurements.social_nav_seek_success.use_geo_distance=True \
+    habitat.task.lab_sensors.humanoid_detector_sensor.return_image=True \
+    habitat.task.lab_sensors.humanoid_detector_sensor.is_return_image_bbox=True \
+    habitat.environment.max_episode_steps=1500 \
+    habitat.simulator.kinematic_mode=True \
+    habitat.simulator.ac_freq_ratio=4 \
+    habitat.simulator.ctrl_freq=120 \
+    habitat.simulator.agents.agent_0.joint_start_noise=0.0
+```
+
+### Evaluation command
+
+```bash
+python -u -m habitat_baselines.run \
+    --config-name=social_nav/social_nav.yaml \
+    benchmark/multi_agent=hssd_spot_human_social_nav \
+    habitat_baselines.evaluate=True \
+    habitat_baselines.num_environments=12 \
+    habitat_baselines.eval_ckpt_path_dir=checkpoints_social_nav/social_nav_latest.pth \
+    habitat_baselines.test_episode_count=500 \
+    habitat.task.actions.agent_0_base_velocity.longitudinal_lin_speed=10.0 \
+    habitat.task.actions.agent_0_base_velocity.ang_speed=10.0 \
+    habitat.environment.max_episode_steps=1500 \
+    habitat.simulator.kinematic_mode=True
+```
+
+Expected results (500 episodes):
+
+```
+Average episode social_nav_reward: 1.8821
+Average episode social_nav_stats.has_found_human: 0.9020
+Average episode social_nav_stats.found_human_rate_after_encounter_over_epi: 0.6423
+Average episode social_nav_stats.first_encounter_steps: 376.0420
+Average episode num_agents_collide: 0.7020
+```
+
+---
+
+## Social Rearrangement
+
+In the Social Rearrangement task, a Spot robot and a humanoid must collaboratively tidy a house (the `multi_agent_tidy_house` PDDL task spec). Each agent contributes to moving objects to their goal positions. The episode succeeds when all PDDL predicates are satisfied.
+
+**Task type:** `RearrangePddlTask-v0`  
+**Config:** `benchmark/multi_agent/hssd_spot_human.yaml`
+
+### Agents
+
+| Agent | Role | Sensor setup |
+|---|---|---|
+| `agent_0` (Spot) | Mobile manipulation robot | RGBD head + RGBD arm |
+| `agent_1` (Humanoid) | Mobile manipulation humanoid | RGBD head |
+
+### Multi-agent config structure
+
+The config uses a two-agent structure with per-agent action and sensor namespacing:
+
+```yaml
+# benchmark/multi_agent/hssd_spot_human.yaml
+defaults:
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.agent_0: rgbd_head_rgbd_arm_agent
+  - /habitat/simulator/agents@habitat.simulator.agents.agent_0: spot
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.agent_1: rgbd_head_agent
+  - /habitat/simulator/agents@habitat.simulator.agents.agent_1: human
+
+  # Per-agent actions
+  - /habitat/task/actions@habitat.task.actions.agent_0_arm_action: arm_action
+  - /habitat/task/actions@habitat.task.actions.agent_0_base_velocity: base_velocity
+  - /habitat/task/actions@habitat.task.actions.agent_0_oracle_nav_action: oracle_nav_action
+  - /habitat/task/actions@habitat.task.actions.agent_1_base_velocity: base_velocity
+  - /habitat/task/actions@habitat.task.actions.agent_1_oracle_nav_action: oracle_nav_action
+
+habitat:
+  task:
+    type: RearrangePddlTask-v0
+    reward_measure: rearrange_cooperate_reward
+    success_measure: pddl_success
+    success_reward: 10.0
+    min_distance_start_agents: 5.0
+    task_spec_base_path: benchmark/multi_agent/
+    task_spec: pddl/multi_agent_tidy_house
+    pddl_domain_def: fp
+    actions:
+      agent_0_arm_action:
+        grip_controller: MagicGraspAction
+      agent_0_base_velocity:
+        lin_speed: 40.0
+        ang_speed: 20.0
+```
+
+### Observation keys with agent prefix
+
+All sensors are duplicated per agent and prefixed with the agent name:
+
+```yaml
+habitat:
+  gym:
+    obs_keys:
+      # Spot (agent_0) observations
+      - agent_0_articulated_agent_arm_depth
+      - agent_0_relative_resting_position
+      - agent_0_obj_start_sensor
+      - agent_0_obj_goal_sensor
+      - agent_0_obj_start_gps_compass
+      - agent_0_obj_goal_gps_compass
+      - agent_0_is_holding
+      - agent_0_ee_pos
+      - agent_0_localization_sensor
+      - agent_0_other_agent_gps
+      - agent_0_agents_within_threshold
+      # Humanoid (agent_1) observations
+      - agent_1_head_depth
+      - agent_1_relative_resting_position
+      - agent_1_obj_start_sensor
+      - agent_1_obj_goal_sensor
+      - agent_1_is_holding
+      - agent_1_other_agent_gps
+      - agent_1_agents_within_threshold
+```
+
+<Note>
+Sensor duplication for multi-agent setups is handled automatically in `RearrangeTask._duplicate_sensor_suite()` (`habitat/tasks/rearrange/rearrange_task.py:42`). Any sensor that subclasses `UsesArticulatedAgentInterface` is duplicated once per agent and prefixed with the agent name.
+</Note>
+
+### Reward and success
+
+```yaml
+habitat:
+  task:
+    measurements:
+      pddl_success:
+        must_call_stop: False
+      rearrange_cooperate_reward:
+        stage_sparse_reward: 5.0
+        end_on_collide: True
+        collide_penalty: 0.5
+```
+
+**Key measurements:**
+
+| Measure UUID | Description |
+|---|---|
+| `pddl_success` | `1.0` when all PDDL predicates are satisfied |
+| `rearrange_cooperate_reward` | Sparse stage rewards minus collision penalties |
+| `composite_stage_goals` | Per-stage goal completion progress |
+| `did_agents_collide` | Whether agents collided on the current step |
+| `num_agents_collide` | Total number of agent–agent collisions in the episode |
+
+### Training commands
+
+```bash
+# Learn-Single: one humanoid policy
+python habitat_baselines/run.py \
+  --config-name=social_rearrange/pop_play.yaml
+
+# Learn-Pop with 8 humanoid policies during training
+python habitat_baselines/run.py \
+  --config-name=social_rearrange/pop_play.yaml \
+  habitat_baselines.rl.agent.num_pool_agents_per_type=[1,8]
+
+# Plan-Pop-4: planner-based high-level policy with plan index 4
+python habitat_baselines/run.py \
+  --config-name=social_rearrange/plan_pop.yaml \
+  habitat_baselines.rl.policy.agent_1.hierarchical_policy.high_level_policy.plan_idx=4
+```
+
+### Zero-shot evaluation
+
+```bash
+# Evaluate against planner-based collaborators
+python habitat_baselines/run.py \
+  --config-name=social_rearrange/pop_play.yaml \
+  habitat_baselines.evaluate=True \
+  habitat_baselines.eval_ckpt_path_dir=PATH_TO_CKPT.pth \
+  +habitat_baselines.rl.policy.agent_1.hierarchical_policy.high_level_policy.select_random_goal=False \
+  +habitat_baselines.rl.policy.agent_1.hierarchical_policy.high_level_policy.plan_idx=1
+```
+
+---
+
+## Simulator configuration for multi-agent
+
+All multi-agent tasks use kinematic simulation mode for performance and sim-to-real compatibility:
+
+```yaml
+habitat:
+  simulator:
+    type: RearrangeSim-v0
+    kinematic_mode: True
+    ac_freq_ratio: 1
+    step_physics: False
+    concur_render: True
+    auto_sleep: True
+    agents_order:
+      - agent_0
+      - agent_1
+    additional_object_paths:
+      - "data/objects/ycb/configs/"
+      - "data/objects/amazon_berkeley/configs/"
+      - "data/objects/google_object_dataset/configs/"
+    habitat_sim_v0:
+      allow_sliding: True
+      enable_physics: True
+  environment:
+    max_episode_steps: 750
+  dataset:
+    data_path: data/datasets/hssd/rearrange/{split}/social_rearrange.json.gz
+```
+
+---
+
+## Data download
+
+All three data UIDs must be downloaded before running any Habitat 3.0 task:
+
+```bash
+python -m habitat_sim.utils.datasets_download \
+  --uids hssd-hab hab3-episodes habitat_humanoids hab3_bench_assets
+```
+
+| UID | Contents |
+|---|---|
+| `hssd-hab` | HSSD scene dataset (130 GB+) |
+| `hab3-episodes` | Social navigation and rearrangement episode splits |
+| `habitat_humanoids` | Humanoid avatar assets and motion capture data |
+| `hab3_bench_assets` | Spot robot assets and benchmark configurations |
+
+<Warning>
+The HSSD dataset is large. Ensure you have sufficient disk space and a fast connection before downloading.
+</Warning>

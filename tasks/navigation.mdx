@@ -1,0 +1,361 @@
+---
+title: "Navigation Tasks"
+description: "Point goal, object goal, image goal, and vision-and-language navigation benchmarks in Habitat-Lab."
+---
+
+Habitat-Lab provides a suite of navigation tasks built on the `Nav-v0` and derived task types. All navigation tasks share a common set of measures (`distance_to_goal`, `success`, `spl`) and a discrete action space (`move_forward`, `turn_left`, `turn_right`, `stop`).
+
+## Task types
+
+<CardGroup cols={2}>
+  <Card title="PointNav" icon="crosshairs">
+    Navigate to a 3D coordinate. The simplest and most studied embodied navigation benchmark.
+  </Card>
+  <Card title="ObjectNav" icon="cube">
+    Navigate to the nearest instance of an object category (e.g. "chair", "toilet").
+  </Card>
+  <Card title="ImageNav / InstanceImageNav" icon="image">
+    Navigate to the location depicted in a goal image captured from the same scene.
+  </Card>
+  <Card title="VLN" icon="comment">
+    Follow natural-language instructions to reach a target location (R2R benchmark on MP3D).
+  </Card>
+</CardGroup>
+
+---
+
+## PointNav (Nav-v0)
+
+The agent starts at a random position and must reach a 3D goal coordinate. The goal is provided as a `pointgoal_with_gps_compass` observation: a polar vector `(distance, heading)` computed relative to the agent's current GPS+Compass state.
+
+**Task type string:** `Nav-v0`  
+**Registered class:** `NavigationTask` (`habitat/tasks/nav/nav.py:1316`)
+
+### Sensors
+
+| Sensor UUID | Shape | Description |
+|---|---|---|
+| `pointgoal` | `(2,)` or `(3,)` | Direction to goal in polar or Cartesian coordinates |
+| `pointgoal_with_gps_compass` | `(2,)` | Distance and heading to goal using GPS+Compass |
+| `gps` | `(2,)` or `(3,)` | Agent position relative to episode start |
+| `compass` | `(1,)` | Heading relative to episode start heading |
+
+### Example config
+
+<Tabs>
+  <Tab title="Gibson">
+    ```yaml
+    # benchmark/nav/pointnav/pointnav_gibson.yaml
+    defaults:
+      - pointnav_base
+      - /habitat/dataset/pointnav: gibson
+
+    habitat:
+      environment:
+        max_episode_steps: 500
+      simulator:
+        agents:
+          main_agent:
+            sim_sensors:
+              rgb_sensor:
+                width: 256
+                height: 256
+              depth_sensor:
+                width: 256
+                height: 256
+    ```
+  </Tab>
+  <Tab title="HM3D">
+    ```yaml
+    # benchmark/nav/pointnav/pointnav_hm3d.yaml
+    defaults:
+      - pointnav_base
+      - /habitat/dataset/pointnav: hm3d
+    ```
+  </Tab>
+  <Tab title="MP3D">
+    ```yaml
+    # benchmark/nav/pointnav/pointnav_mp3d.yaml
+    defaults:
+      - pointnav_base
+      - /habitat/dataset/pointnav: mp3d
+    ```
+  </Tab>
+</Tabs>
+
+### Python example
+
+```python
+import habitat
+
+config = habitat.get_config(
+    "benchmark/nav/pointnav/pointnav_gibson.yaml"
+)
+with habitat.Env(config=config) as env:
+    obs = env.reset()
+    # obs["pointgoal_with_gps_compass"] → np.ndarray shape (2,)
+    # obs["rgb"] → np.ndarray shape (256, 256, 3)
+    while not env.episode_over:
+        action = env.action_space.sample()
+        obs = env.step(action)
+```
+
+---
+
+## ObjectNav (ObjectNav-v1)
+
+The agent must navigate to the nearest instance of a specified object category. The goal category is provided as an integer category ID via the `objectgoal` sensor.
+
+**Task type string:** `ObjectNav-v1`  
+**Registered class:** `ObjectNavigationTask` (`habitat/tasks/nav/object_nav_task.py:182`)
+
+The `ObjectGoal` specifies both the object's position and a set of `view_points` — navigable positions from which the object is visible. `DistanceToGoal` is computed to these view points when `distance_to: VIEW_POINTS` is set.
+
+### Sensors
+
+| Sensor UUID | Shape | Description |
+|---|---|---|
+| `objectgoal` | `(1,)` | Integer category ID of the target object |
+| `gps` | `(2,)` | Agent position relative to episode start |
+| `compass` | `(1,)` | Heading relative to episode start |
+| `rgb` | `(H, W, 3)` | RGB camera image |
+| `depth` | `(H, W, 1)` | Depth camera image |
+
+### Example config
+
+```yaml
+# benchmark/nav/objectnav/objectnav_hm3d.yaml
+defaults:
+  - /habitat/task: objectnav
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbd_agent
+  - /habitat/dataset/objectnav: hm3d
+
+habitat:
+  environment:
+    max_episode_steps: 500
+  simulator:
+    turn_angle: 30
+    agents:
+      main_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 640
+            height: 480
+            hfov: 79
+            position: [0, 0.88, 0]
+          depth_sensor:
+            width: 640
+            height: 480
+            hfov: 79
+            min_depth: 0.5
+            max_depth: 5.0
+            position: [0, 0.88, 0]
+        height: 0.88
+        radius: 0.18
+```
+
+---
+
+## ImageNav and InstanceImageNav
+
+### ImageNav (Nav-v0 with `imagegoal` sensor)
+
+The agent receives an RGB image captured from the goal position at a random rotation. The task uses the standard `Nav-v0` task type, with the `ImageGoalSensor` (`cls_uuid: "imagegoal"`) replacing the point goal. Datasets reuse the PointNav episode format — goal positions are drawn from the PointNav splits.
+
+### InstanceImageNav (InstanceImageNav-v1)
+
+A harder variant where the goal image is captured with specific camera intrinsics (resolution, HFOV, extrinsics) stored per episode. The agent must navigate to the exact object instance shown in the image.
+
+**Task type string:** `InstanceImageNav-v1`  
+**Registered class:** `InstanceImageNavigationTask` (`habitat/tasks/nav/instance_image_nav_task.py:253`)
+
+The `InstanceImageGoalSensor` (`cls_uuid: "instance_imagegoal"`) temporarily adds a sensor with the episode-specified camera parameters, renders the goal image, and removes the sensor.
+
+### Sensors
+
+| Sensor UUID | Shape | Description |
+|---|---|---|
+| `instance_imagegoal` | `(H, W, 3)` | Rendered goal image at episode-specified camera pose |
+| `instance_imagegoal_hfov` | `(1,)` | Horizontal field of view of the goal image in degrees |
+
+### Example config
+
+```yaml
+# benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v1.yaml
+defaults:
+  - /habitat/task: instance_imagenav
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbd_agent
+  - /habitat/dataset/instance_imagenav: hm3d_v1
+
+habitat:
+  environment:
+    max_episode_steps: 1000
+  simulator:
+    turn_angle: 30
+    agents:
+      main_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 640
+            height: 480
+            hfov: 79
+            position: [0, 0.88, 0]
+          depth_sensor:
+            width: 640
+            height: 480
+            hfov: 79
+            min_depth: 0.5
+            max_depth: 5.0
+            position: [0, 0.88, 0]
+```
+
+---
+
+## Vision-and-Language Navigation (VLN)
+
+The VLN task uses the R2R (Room-to-Room) dataset on MatterPort3D. The agent receives a natural-language instruction and must follow it to reach a target location within 500 steps.
+
+**Config:** `benchmark/nav/vln_r2r.yaml`
+
+```yaml
+# benchmark/nav/vln_r2r.yaml
+defaults:
+  - /habitat/task: vln_r2r
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbd_agent
+  - /habitat/dataset/vln: mp3d_r2r
+
+habitat:
+  environment:
+    max_episode_steps: 500
+  simulator:
+    agents:
+      main_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 256
+            height: 256
+            hfov: 90
+          depth_sensor:
+            width: 256
+            height: 256
+    forward_step_size: 0.25
+    turn_angle: 15
+```
+
+---
+
+## Measurements
+
+All navigation tasks share the following measures:
+
+| Measure UUID | Description |
+|---|---|
+| `distance_to_goal` | Geodesic distance from the agent's current position to the nearest goal position. |
+| `success` | `1.0` if `stop` is called and `distance_to_goal < success_distance`, else `0.0`. |
+| `spl` | Success weighted by Path Length — `success × (shortest_path / max(shortest_path, agent_path))`. |
+| `soft_spl` | Soft-SPL using `1 - distance_to_goal / start_distance` in place of binary success. |
+| `distance_to_goal_reward` | Dense reward: `-(new_distance - previous_distance)` at each step. |
+| `collisions` | Dict with `count` (total collisions) and `is_collision` (current step flag). |
+| `top_down_map` | Top-down map of the scene with agent trajectory and goal overlaid. |
+
+<Note>
+`success` depends on `distance_to_goal`. Both must be listed under `habitat.task.measurements` for `spl` to work correctly — `spl` checks for both `distance_to_goal` and `success` as dependencies.
+</Note>
+
+### Configuring measures
+
+```yaml
+habitat:
+  task:
+    type: Nav-v0
+    reward_measure: distance_to_goal_reward
+    success_measure: success
+    measurements:
+      success:
+        success_distance: 0.2
+      distance_to_goal:
+        distance_to: POINT   # or VIEW_POINTS for ObjectNav
+```
+
+---
+
+## Available datasets
+
+<AccordionGroup>
+  <Accordion title="PointNav datasets">
+    | Dataset | Scenes | Extract path | Size |
+    |---|---|---|---|
+    | PointNav Gibson v1 | Gibson | `data/datasets/pointnav/gibson/v1/` | 385 MB |
+    | PointNav Gibson 0+ | Gibson | `data/datasets/pointnav/gibson/v1/` | 321 MB |
+    | PointNav MP3D | MatterPort3D | `data/datasets/pointnav/mp3d/v1/` | 400 MB |
+    | PointNav HM3D | HM3D | `data/datasets/pointnav/hm3d/v1/` | 992 MB |
+
+    Download:
+    ```bash
+    # Gibson v1
+    wget https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/gibson/v1/pointnav_gibson_v1.zip
+    ```
+  </Accordion>
+  <Accordion title="ObjectNav datasets">
+    | Dataset | Scenes | Extract path | Size |
+    |---|---|---|---|
+    | ObjectNav MP3D | MatterPort3D | `data/datasets/objectnav/mp3d/v1/` | 170 MB |
+    | ObjectNav HM3D v1 | HM3DSem-v0.1 | `data/datasets/objectnav/hm3d/v1/` | 154 MB |
+    | ObjectNav HM3D v2 | HM3DSem-v0.2 | `data/datasets/objectnav/hm3d/v2/` | 245 MB |
+
+    Download:
+    ```bash
+    # HM3D v1
+    wget https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v1/objectnav_hm3d_v1.zip
+    ```
+  </Accordion>
+  <Accordion title="InstanceImageNav datasets">
+    | Dataset | Scenes | Extract path | Size |
+    |---|---|---|---|
+    | InstanceImageNav HM3D v1 | HM3DSem-v0.1 | `data/datasets/instance_imagenav/hm3d/v1/` | 303 MB |
+    | InstanceImageNav HM3D v2 | HM3DSem-v0.2 | `data/datasets/instance_imagenav/hm3d/v2/` | 518 MB |
+    | InstanceImageNav HM3D v3 | HM3DSem-v0.2 | `data/datasets/instance_imagenav/hm3d/v3/` | 517 MB |
+
+    Download:
+    ```bash
+    # HM3D v1
+    wget https://dl.fbaipublicfiles.com/habitat/data/datasets/imagenav/hm3d/v1/instance_imagenav_hm3d_v1.zip
+    ```
+  </Accordion>
+  <Accordion title="VLN datasets">
+    | Dataset | Scenes | Extract path | Size |
+    |---|---|---|---|
+    | VLN R2R MP3D | MatterPort3D | `data/datasets/vln/mp3d/r2r/v1` | 2.7 MB |
+
+    Download:
+    ```bash
+    wget https://dl.fbaipublicfiles.com/habitat/data/datasets/vln/mp3d/r2r/v1/vln_r2r_mp3d_v1.zip
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+Scene datasets (Gibson, MP3D, HM3D) must be downloaded separately. Follow the instructions in the [habitat-sim DATASETS.md](https://github.com/facebookresearch/habitat-sim/blob/main/DATASETS.md).
+</Warning>
+
+---
+
+## Training with PPO
+
+Use `habitat_baselines` to train a PPO agent on PointNav:
+
+```bash
+# Train on Gibson PointNav
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml
+
+# Train with VER trainer (faster)
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml \
+  habitat_baselines.trainer_name=ver
+
+# Evaluate a trained checkpoint
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml \
+  habitat_baselines.evaluate=True
+```

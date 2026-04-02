@@ -1,0 +1,129 @@
+---
+title: 'Docker setup'
+description: 'Run Habitat-Lab inside a Docker container with NVIDIA GPU support.'
+---
+
+The Habitat-Lab Dockerfile builds a self-contained environment with Miniconda, habitat-sim, and habitat-lab installed into a dedicated `habitat` conda environment.
+
+<Warning>
+An NVIDIA GPU with working drivers is required. The base image is `nvidia/cudagl:10.1-devel-ubuntu16.04`. CPU-only rendering is not supported in the default image.
+</Warning>
+
+## What the Dockerfile installs
+
+The `Dockerfile` at the repository root performs the following steps:
+
+<Steps>
+  <Step title="System packages">
+    Installs build tools and graphics libraries: `build-essential`, `git`, `libegl1-mesa-dev`, `libglfw3-dev`, and others required by habitat-sim.
+  </Step>
+  <Step title="Miniconda">
+    Downloads and installs Miniconda to `/opt/conda`, then adds `/opt/conda/bin` to `PATH`.
+  </Step>
+  <Step title="CMake">
+    Downloads CMake 3.14 and installs it to `/opt/cmake`.
+  </Step>
+  <Step title="Conda environment">
+    Creates a conda environment named `habitat` with Python 3.12 and CMake 3.28:
+    ```bash
+    conda create -n habitat python=3.12 cmake=3.28
+    ```
+  </Step>
+  <Step title="habitat-sim">
+    Clones the `stable` branch of habitat-sim and installs it without GUI viewers:
+    ```bash
+    git clone --branch stable https://github.com/facebookresearch/habitat-sim.git --recursive
+    pip install -r requirements.txt
+    HABITAT_BUILD_GUI_VIEWERS=OFF pip install . --no-build-isolation
+    ```
+  </Step>
+  <Step title="habitat-lab">
+    Clones the `stable` branch of habitat-lab and installs it in editable mode:
+    ```bash
+    git clone --branch stable https://github.com/facebookresearch/habitat-lab.git
+    pip install -e habitat-lab/
+    ```
+  </Step>
+</Steps>
+
+Log verbosity is suppressed by default via two environment variables set in the image:
+
+```
+GLOG_minloglevel=2
+MAGNUM_LOG=quiet
+```
+
+## Build the image
+
+From the root of the habitat-lab repository:
+
+```bash
+docker build -t habitat-lab:latest .
+```
+
+The build pulls all dependencies from the internet. Expect it to take 20–40 minutes on first run depending on your connection speed.
+
+## Start an interactive session
+
+Run a container with GPU access and mount your local `data/` directory so the datasets you have downloaded are available inside the container:
+
+```bash
+docker run --gpus all -it \
+    -v "$(pwd)/data:/habitat-lab/data" \
+    habitat-lab:latest \
+    /bin/bash
+```
+
+## Activate the conda environment
+
+Inside the container, activate the `habitat` environment before running any Python code:
+
+```bash
+conda activate habitat
+```
+
+Verify the installation:
+
+```bash
+python -c "import habitat; print(habitat.__version__)"
+```
+
+## Download test assets and run a basic check
+
+```bash
+# Download minimal test scenes
+python -m habitat_sim.utils.datasets_download \
+    --uids habitat_test_scenes \
+    --data-path data/
+
+# Run the example script
+python examples/example.py
+```
+
+## Run the interactive viewer (requires X forwarding)
+
+The default image disables GUI viewers (`HABITAT_BUILD_GUI_VIEWERS=OFF`). If you need interactive rendering, rebuild habitat-sim without that flag and run the container with X11 forwarding:
+
+```bash
+docker run --gpus all -it \
+    -e DISPLAY=$DISPLAY \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v "$(pwd)/data:/habitat-lab/data" \
+    habitat-lab:latest \
+    /bin/bash
+```
+
+<Note>
+On Linux, run `xhost +local:docker` on the host before starting the container to allow X connections from Docker.
+</Note>
+
+## Enable verbose logging
+
+To increase rendering verbosity for debugging inside the container, set these environment variables before launching your script:
+
+```bash
+HABITAT_SIM_LOG=verbose MAGNUM_LOG=verbose MAGNUM_GPU_VALIDATION=ON \
+    python examples/example.py
+```
+
+See the [Troubleshooting](/guides/troubleshooting) guide for a full list of graphics debugging steps.

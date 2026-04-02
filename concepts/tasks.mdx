@@ -1,0 +1,250 @@
+---
+title: "Tasks"
+description: "How EmbodiedTask defines the action space, sensors, and measurements for a Habitat-Lab experiment."
+---
+
+An `EmbodiedTask` is the formal specification of what an agent must do. It owns the **action space**, a **sensor suite** for task-specific observations, and a set of **measurements** that produce reward and success signals. `Env` calls the task's `reset()` and `step()` at each interaction.
+
+## The `EmbodiedTask` class
+
+`EmbodiedTask` is defined in `habitat/core/embodied_task.py`. It holds:
+
+- `measurements` — an ordered set of `Measure` instances updated every step.
+- `sensor_suite` — a `SensorSuite` of task-level sensors (lab sensors).
+- `actions` — a dict of `Action` instances keyed by action name.
+
+```python
+task = env.task
+
+print(task.action_space)         # ActionSpace dict of all registered actions
+print(task.sensor_suite.sensors) # dict of task-level Sensor objects
+print(task.measurements.measures)# ordered dict of Measure objects
+```
+
+On each `env.step(action)`, the task:
+
+1. Dispatches the action to the matching `Action.step()`.
+2. Advances physics by `1 / physics_target_sps` seconds.
+3. Collects updated sensor observations.
+4. Evaluates `_check_episode_is_active()` to decide if the episode continues.
+
+---
+
+## Registering a task
+
+Tasks are registered with the global registry using the `@registry.register_task` decorator. The decorated class must subclass `EmbodiedTask`.
+
+```python
+from habitat.core.registry import registry
+from habitat.core.embodied_task import EmbodiedTask
+
+@registry.register_task(name="MyTask-v0")
+class MyTask(EmbodiedTask):
+    def overwrite_sim_config(self, sim_config, episode):
+        # Optionally patch the simulator config per-episode
+        return sim_config
+
+    def _check_episode_is_active(self, *, action, episode, **kwargs):
+        # Return False to end the episode
+        return not self.measurements.measures["my_success"].get_metric()
+```
+
+Reference it in your config with:
+
+```yaml
+habitat:
+  task:
+    type: MyTask-v0
+```
+
+---
+
+## Available task types
+
+The `habitat.task.type` config key selects the task. Built-in tasks include:
+
+<AccordionGroup>
+  <Accordion title="Navigation tasks">
+    | Type key | Description |
+    |---|---|
+    | `Nav-0` | Point navigation — navigate to a target 3-D position. |
+    | `Nav-0` | Image navigation — navigate to a location matching a goal image. |
+    | `InstanceImageNav-v1` | Instance image navigation — navigate to the specific object instance shown in a goal image sampled from the current scene. |
+    | `ObjectNav-v1` | Object navigation — navigate to any instance of a target object category. |
+  </Accordion>
+  <Accordion title="Rearrangement tasks">
+    | Type key | Description |
+    |---|---|
+    | `RearrangePickTask-v0` | Pick up a specific object from known coordinates. |
+    | `RearrangePlaceTask-v0` | Place a grasped object at target coordinates. |
+    | `NavToObjTask-v0` | Navigate to an object at a known position. |
+    | `RearrangeReachTask-v0` | Move the end effector to target coordinates. |
+    | `RearrangeCloseDrawerTask-v0` | Close a kitchen drawer. |
+    | `RearrangeOpenDrawerTask-v0` | Open a kitchen drawer. |
+    | `RearrangeCloseFridgeTask-v0` | Close a kitchen fridge. |
+    | `RearrangeOpenFridgeTask-v0` | Open a kitchen fridge. |
+    | `RearrangeEmptyTask-v0` | No-op task, useful for debugging. |
+    | `RearrangePddlTask-v0` | Composite task defined by a PDDL plan (sequence of sub-tasks). |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Actions
+
+Actions are the atomic operations an agent can perform. They are defined in `habitat.task.actions` and registered with `@registry.register_task_action`.
+
+### Discrete navigation actions
+
+Navigation tasks use a discrete action space. Actions are added to the defaults list in config:
+
+```yaml
+defaults:
+  - /habitat/task/actions:
+    - move_forward
+    - turn_left
+    - turn_right
+    - look_up
+    - look_down
+    - stop
+```
+
+| Action key | Description |
+|---|---|
+| `move_forward` | Move forward by `habitat.simulator.forward_step_size` meters. |
+| `turn_left` | Rotate left by `habitat.simulator.turn_angle` degrees. |
+| `turn_right` | Rotate right by `habitat.simulator.turn_angle` degrees. |
+| `look_up` | Tilt camera up by `tilt_angle` degrees. |
+| `look_down` | Tilt camera down by `tilt_angle` degrees. |
+| `stop` | Signal task completion. Required to succeed in navigation tasks. |
+| `empty` | No-op — agent does nothing. |
+
+Calling `env.step("move_forward")` or `env.step({"action": "move_forward"})` both work.
+
+### Continuous rearrangement actions
+
+Rearrangement tasks use a continuous action space:
+
+| Action key | Description |
+|---|---|
+| `arm_action` | Delta joint angles (radians) for each arm joint. |
+| `base_velocity` | Two floats: forward/backward velocity and rotation. |
+| `rearrange_stop` | End the rearrangement episode. |
+| `oracle_nav_action` | Discrete object ID; an oracle controller navigates to it. |
+
+```python
+# Continuous arm action
+env.step({
+    "action": "arm_action",
+    "action_args": {"arm_action": np.zeros(7), "grip_action": 0.0},
+})
+```
+
+### Implementing a custom action
+
+```python
+from habitat.core.registry import registry
+from habitat.core.embodied_task import SimulatorTaskAction
+from habitat.core.spaces import EmptySpace
+
+@registry.register_task_action
+class MyTeleportAction(SimulatorTaskAction):
+    @property
+    def action_space(self):
+        return EmptySpace()
+
+    def reset(self, *args, **kwargs):
+        pass
+
+    def step(self, task, *args, **kwargs):
+        # Move agent to a fixed location for demonstration
+        self._sim.set_agent_state(
+            position=[0.0, 0.0, 0.0],
+            rotation=[0.0, 0.0, 0.0, 1.0],
+        )
+        return self._sim.get_observations_at()
+```
+
+---
+
+## Measurements
+
+Measurements collect privileged information at each step — rewards, success flags, distance metrics, and more. They are computed by `Measure` subclasses (see [Sensors and Measures](/concepts/sensors-and-measures) for the `Measure` API).
+
+### Key task config keys
+
+```yaml
+habitat:
+  task:
+    type: ObjectNav-v1
+    physics_target_sps: 60          # physics steps per second
+    reward_measure: distance_to_goal_reward   # Measure used as reward
+    success_measure: success                  # Measure used to detect success
+    end_on_success: true            # end episode when success_measure is nonzero
+```
+
+<Note>
+`reward_measure` and `success_measure` must match a key present in `habitat.task.measurements`. If a key is listed that has not been added to the measurements defaults, the task will raise an `AssertionError` at startup.
+</Note>
+
+### Built-in navigation measurements
+
+```yaml
+defaults:
+  - /habitat/task/measurements:
+    - distance_to_goal
+    - success
+    - spl
+    - soft_spl
+    - distance_to_goal_reward
+    - num_steps
+```
+
+| Key | Description |
+|---|---|
+| `num_steps` | Step count since episode start. |
+| `distance_to_goal` | Geodesic distance to the nearest goal. |
+| `success` | `1.0` if stop was called within `success_distance` of goal. |
+| `spl` | Success weighted by Path Length. |
+| `soft_spl` | Continuous variant of SPL based on remaining distance. |
+| `distance_to_goal_reward` | Shaped reward: negative change in distance per step. |
+
+### Built-in rearrangement measurements
+
+| Key | Description |
+|---|---|
+| `articulated_agent_force` | Instantaneous and accumulated force applied by the robot. |
+| `force_terminate` | `1.0` if force exceeds `max_accum_force` or `max_instant_force`. |
+| `does_want_terminate` | `1.0` if the agent called `rearrange_stop`. |
+| `object_to_goal_distance` | Distance between the target object and its goal location. |
+| `obj_at_goal` | Dict of target indices → `1.0` if within `succ_thresh`. |
+| `end_effector_to_rest_distance` | Distance from end effector to resting position. |
+| `composite_stage_goals` | `1.0` per completed PDDL stage. |
+
+### Task-defining measures
+
+For rearrangement tasks, the recommended `reward_measure` / `success_measure` pairs are:
+
+| Task | `success_measure` | `reward_measure` |
+|---|---|---|
+| Pick | `pick_success` | `place_reward` |
+| Place | `place_success` | `place_reward` |
+| Open/Close articulated object | `art_obj_success` | `art_obj_reward` |
+| Navigate to object | `nav_to_obj_success` | `nav_to_obj_reward` |
+| Composite PDDL | `pddl_compositesuccess` | `move_objects_reward` |
+
+---
+
+## Measure dependencies
+
+Measures that depend on other measures must be listed **after** their dependencies in the `measurements` dict. The `Measurements.check_measure_dependencies()` method enforces this at startup:
+
+```python
+class MySPL(Measure):
+    def reset_metric(self, *args, **kwargs):
+        # Must declare dependency on "success" and "distance_to_goal"
+        self._measurements.check_measure_dependencies(
+            self.uuid, ["success", "distance_to_goal"]
+        )
+        self.update_metric(*args, **kwargs)
+```

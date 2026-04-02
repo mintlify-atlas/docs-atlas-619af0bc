@@ -1,0 +1,405 @@
+---
+title: "Registry"
+description: "The global Registry singleton for registering and looking up tasks, simulators, sensors, measures, datasets, and environments in Habitat-Lab."
+---
+
+The `Registry` is the central source of truth in Habitat-Lab. It is a **singleton** (only one instance exists per process) that maintains named mappings for every extensible component type: tasks, simulators, sensors, measures, datasets, and environments. Register your custom class with a decorator; retrieve it by name anywhere in the codebase.
+
+```python
+from habitat.core.registry import registry
+```
+
+<Note>
+  The design is inspired by Redux's concept of a global store. All registrations are stored in `Registry.mapping`, a `defaultdict` keyed by component type.
+</Note>
+
+## Overview
+
+| Decorator | Type key | Required base class |
+|---|---|---|
+| `register_task` | `"task"` | `EmbodiedTask` |
+| `register_task_action` | `"task_action"` | `Action` |
+| `register_simulator` | `"sim"` | `Simulator` |
+| `register_sensor` | `"sensor"` | `Sensor` |
+| `register_measure` | `"measure"` | `Measure` |
+| `register_dataset` | `"dataset"` | `Dataset` |
+| `register_env` | `"env"` | `gym.Env` |
+
+---
+
+## Registering components
+
+Each `register_*` decorator can be used with or without a custom name argument.
+
+### `register_task`
+
+Registers a subclass of `EmbodiedTask`.
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key under which the task is registered. Defaults to the class name if not provided.
+</ParamField>
+
+<Tabs>
+  <Tab title="Without name">
+    ```python
+    from habitat.core.registry import registry
+    from habitat.core.embodied_task import EmbodiedTask
+
+    @registry.register_task
+    class MyTask(EmbodiedTask):
+        pass
+
+    # Registered under "MyTask"
+    ```
+  </Tab>
+  <Tab title="With name">
+    ```python
+    from habitat.core.registry import registry
+    from habitat.core.embodied_task import EmbodiedTask
+
+    @registry.register_task(name="MY_CUSTOM_TASK")
+    class MyTask(EmbodiedTask):
+        pass
+
+    # Registered under "MY_CUSTOM_TASK"
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+### `register_task_action`
+
+Registers a subclass of `Action`. Actions are associated with tasks and define parametrized or continuous interactions with the simulator.
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key for the action. Defaults to the class name.
+</ParamField>
+
+```python
+from habitat.core.registry import registry
+from habitat.core.embodied_task import Action
+
+@registry.register_task_action
+class MoveForwardAction(Action):
+    def step(self, *args, **kwargs):
+        return self._sim.step("MOVE_FORWARD")
+
+# or with a custom name
+@registry.register_task_action(name="TURN_LEFT")
+class TurnLeftAction(Action):
+    def step(self, *args, **kwargs):
+        return self._sim.step("TURN_LEFT")
+```
+
+---
+
+### `register_simulator`
+
+Registers a subclass of `Simulator`.
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key for the simulator. Defaults to the class name.
+</ParamField>
+
+```python
+from habitat.core.registry import registry
+from habitat.core.simulator import Simulator
+
+@registry.register_simulator(name="MY_SIM")
+class MySimulator(Simulator):
+    def reset(self):
+        ...
+
+    def step(self, action, *args, **kwargs):
+        ...
+```
+
+---
+
+### `register_sensor`
+
+Registers a subclass of `Sensor`.
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key for the sensor. Defaults to the class name.
+</ParamField>
+
+```python
+from habitat.core.registry import registry
+from habitat.core.simulator import Sensor, SensorTypes
+from gym import spaces
+import numpy as np
+
+@registry.register_sensor
+class MySensor(Sensor):
+    def _get_uuid(self, *args, **kwargs):
+        return "my_sensor"
+
+    def _get_sensor_type(self, *args, **kwargs):
+        return SensorTypes.TENSOR
+
+    def _get_observation_space(self, *args, **kwargs):
+        return spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
+
+    def get_observation(self, *args, **kwargs):
+        return np.array([0.5], dtype=np.float32)
+```
+
+---
+
+### `register_measure`
+
+Registers a subclass of `Measure`. Measures are computed after each step and collected by the task's `Measurements` object.
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key for the measure. Defaults to the class name.
+</ParamField>
+
+```python
+from habitat.core.registry import registry
+from habitat.core.embodied_task import Measure
+
+@registry.register_measure
+class MySuccessMetric(Measure):
+    @staticmethod
+    def _get_uuid(*args, **kwargs):
+        return "my_success"
+
+    def reset_metric(self, *args, **kwargs):
+        self._metric = 0.0
+
+    def update_metric(self, *args, task, **kwargs):
+        self._metric = 1.0 if task.is_success else 0.0
+```
+
+---
+
+### `register_dataset`
+
+Registers a subclass of `Dataset`.
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key for the dataset. Defaults to the class name. This key is used as the `dataset.type` config value.
+</ParamField>
+
+```python
+from habitat.core.registry import registry
+from habitat.core.dataset import Dataset, Episode
+
+@registry.register_dataset(name="MyDataset-v1")
+class MyDataset(Dataset):
+    def __init__(self, config):
+        self.episodes = []
+        # load episodes from config.data_path ...
+```
+
+<Tip>
+  The `dataset.type` field in your config must exactly match the registration key, e.g. `type: "MyDataset-v1"`.
+</Tip>
+
+---
+
+### `register_env`
+
+Registers a subclass of `gym.Env` (typically an `RLEnv` subclass).
+
+<ParamField path="body.name" type="Optional[str]" default="None">
+  Key for the environment. Defaults to the class name.
+</ParamField>
+
+```python
+from habitat.core.registry import registry
+from habitat.core.env import RLEnv
+
+@registry.register_env(name="MyRLEnv-v0")
+class MyRLEnv(RLEnv):
+    def get_reward_range(self):
+        return [-1.0, 1.0]
+
+    def get_reward(self, observations):
+        return 0.0
+
+    def get_done(self, observations):
+        return self.habitat_env.episode_over
+
+    def get_info(self, observations):
+        return self.habitat_env.get_metrics()
+```
+
+---
+
+## Looking up registered components
+
+Each `register_*` decorator has a corresponding `get_*` class method. All return `None` if the name is not found.
+
+```python
+from habitat.core.registry import registry
+
+# Retrieve a registered class by name
+TaskClass    = registry.get_task("PointNav-v1")
+ActionClass  = registry.get_task_action("MOVE_FORWARD")
+SimClass     = registry.get_simulator("Sim-v0")
+SensorClass  = registry.get_sensor("RGBSensor")
+MeasureClass = registry.get_measure("DistanceToGoal")
+DatasetClass = registry.get_dataset("PointNav-v1")
+EnvClass     = registry.get_env("NavRLEnv-v0")
+
+if TaskClass is None:
+    raise ValueError("Task not registered")
+
+task_instance = TaskClass(config=task_config, sim=sim, dataset=dataset)
+```
+
+### `get_task`
+
+```python
+@classmethod
+def get_task(cls, name: str) -> Type[EmbodiedTask]
+```
+
+<ParamField path="body.name" type="str" required>
+  Registration key for the task.
+</ParamField>
+
+<ResponseField name="return" type="Type[EmbodiedTask]">
+  The registered task class, or `None` if not found.
+</ResponseField>
+
+### `get_task_action`
+
+```python
+@classmethod
+def get_task_action(cls, name: str) -> Type[Action]
+```
+
+<ResponseField name="return" type="Type[Action]">
+  The registered action class, or `None` if not found.
+</ResponseField>
+
+### `get_simulator`
+
+```python
+@classmethod
+def get_simulator(cls, name: str) -> Type[Simulator]
+```
+
+<ResponseField name="return" type="Type[Simulator]">
+  The registered simulator class, or `None` if not found.
+</ResponseField>
+
+### `get_sensor`
+
+```python
+@classmethod
+def get_sensor(cls, name: str) -> Type[Sensor]
+```
+
+<ResponseField name="return" type="Type[Sensor]">
+  The registered sensor class, or `None` if not found.
+</ResponseField>
+
+### `get_measure`
+
+```python
+@classmethod
+def get_measure(cls, name: str) -> Type[Measure]
+```
+
+<ResponseField name="return" type="Type[Measure]">
+  The registered measure class, or `None` if not found.
+</ResponseField>
+
+### `get_dataset`
+
+```python
+@classmethod
+def get_dataset(cls, name: str) -> Type[Dataset]
+```
+
+<ResponseField name="return" type="Type[Dataset]">
+  The registered dataset class, or `None` if not found.
+</ResponseField>
+
+### `get_env`
+
+```python
+@classmethod
+def get_env(cls, name: str) -> Type[RLEnv]
+```
+
+<ResponseField name="return" type="Type[RLEnv]">
+  The registered environment class, or `None` if not found.
+</ResponseField>
+
+---
+
+## Internal structure
+
+The registry stores all mappings in a single class-level attribute:
+
+```python
+Registry.mapping: DefaultDict[str, Any]
+# e.g.
+# {
+#   "task":        {"PointNav-v1": PointNavTask, ...},
+#   "sim":         {"Sim-v0": HabitatSim, ...},
+#   "sensor":      {"RGBSensor": RGBSensor, ...},
+#   "measure":     {"DistanceToGoal": DistanceToGoal, ...},
+#   "dataset":     {"PointNav-v1": PointNavDatasetV1, ...},
+#   "env":         {"NavRLEnv-v0": NavRLEnv, ...},
+#   "task_action": {"MOVE_FORWARD": MoveForwardAction, ...},
+# }
+```
+
+Because `Registry` uses the `Singleton` metaclass, `registry` is always the same object regardless of how many times it is imported.
+
+```python
+from habitat.core.registry import registry as r1
+from habitat.core.registry import registry as r2
+assert r1 is r2  # True
+```
+
+---
+
+## BaselineRegistry
+
+`habitat_baselines` extends `Registry` with additional registration types for training components. Import it from:
+
+```python
+from habitat_baselines.common.baseline_registry import baseline_registry
+```
+
+| Decorator | Description |
+|---|---|
+| `@baseline_registry.register_trainer(name=...)` | Register a `BaseTrainer` subclass (e.g. `PPOTrainer`, `VERTrainer`) |
+| `@baseline_registry.register_policy(name=...)` | Register a `Policy` subclass (e.g. `PointNavResNetPolicy`) |
+| `@baseline_registry.register_obs_transformer(name=...)` | Register an `ObservationTransformer` subclass |
+| `@baseline_registry.register_storage(name=...)` | Register a rollout `Storage` subclass |
+| `@baseline_registry.register_agent_access_mgr(name=...)` | Register an `AgentAccessMgr` subclass |
+| `@baseline_registry.register_updater(name=...)` | Register a policy updater |
+| `@baseline_registry.register_auxiliary_loss(name=...)` | Register an auxiliary loss module |
+
+Example: registering a custom policy and trainer:
+
+```python
+from habitat_baselines.common.baseline_registry import baseline_registry
+from habitat_baselines.rl.ppo.policy import NetPolicy
+
+@baseline_registry.register_policy
+class MyCustomPolicy(NetPolicy):
+    @classmethod
+    def from_config(cls, config, observation_space, action_space, **kwargs):
+        return cls(observation_space, action_space, **kwargs)
+
+    def act(self, observations, rnn_hidden_states, prev_actions, masks, deterministic=False):
+        # ... policy logic
+        pass
+```
+
+The `trainer_name` config key in `habitat_baselines` selects which registered trainer to use:
+
+```yaml
+habitat_baselines:
+  trainer_name: "ppo"  # or "ddppo", "ver", "eqa-cnn-pretrain", "vqa", "pacman"
+```

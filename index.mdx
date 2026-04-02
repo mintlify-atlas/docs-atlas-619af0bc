@@ -1,97 +1,90 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Habitat-Lab"
+description: "A modular high-level library for end-to-end development in embodied AI — train agents to navigate, rearrange, and interact with humans in photorealistic 3D environments."
 ---
 
-## Setting up
+Habitat-Lab is an open-source research platform from Meta AI for developing and evaluating embodied AI agents. Built on top of [Habitat-Sim](https://github.com/facebookresearch/habitat-sim), it provides a flexible Python framework for defining tasks, configuring sensors, training policies with RL and IL algorithms, and benchmarking agent performance at scale.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Set up Habitat-Lab with conda and pip in a few steps
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first embodied AI task in minutes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/environment">
+    Understand environments, tasks, sensors, and agents
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/env">
+    Explore the full Python API surface
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can build
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Navigation tasks" icon="compass" href="/tasks/navigation">
+    Train agents to navigate to points, objects, or images using PointNav, ObjectNav, and ImageNav
+  </Card>
+  <Card title="Rearrangement tasks" icon="hand" href="/tasks/rearrangement">
+    Develop mobile manipulation policies for pick, place, and multi-step rearrangement
+  </Card>
+  <Card title="Multi-agent & social AI" icon="users" href="/tasks/multi-agent">
+    Train robots and humanoids to collaborate in shared environments (Habitat 3.0)
+  </Card>
+  <Card title="Human-in-the-loop" icon="desktop" href="/hitl/overview">
+    Build interactive desktop and VR apps for data collection and agent evaluation
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started in 3 steps
 
-## Need inspiration?
+<Steps>
+  <Step title="Install Habitat-Lab">
+    Create a conda environment and install the core library and optional baselines package.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    ```bash
+    conda create -n habitat python=3.9 cmake=3.14.0
+    conda activate habitat
+    conda install habitat-sim withbullet -c conda-forge -c aihabitat
+    pip install -e habitat-lab
+    pip install -e habitat-baselines  # optional, for RL training
+    ```
+  </Step>
+  <Step title="Run a task">
+    Load a pre-defined task through the Gym interface and step through it with random actions.
+
+    ```python
+    import gym
+    import habitat.gym
+
+    env = gym.make("HabitatRenderPick-v0")
+    observations = env.reset()
+
+    terminal = False
+    while not terminal:
+        observations, reward, terminal, info = env.step(env.action_space.sample())
+    ```
+  </Step>
+  <Step title="Train a policy">
+    Launch PPO training using the habitat-baselines runner with a pre-built config.
+
+    ```bash
+    python -m habitat_baselines.run \
+      --config-name=pointnav/ppo_pointnav_example.yaml
+    ```
+  </Step>
+</Steps>
+
+## Key features
+
+- **Flexible task definitions** — Point navigation, object navigation, rearrangement, VLN, EQA, and custom tasks via the registry system
+- **Diverse robot support** — Fetch, Spot, Franka, humanoids, and custom articulated agents with configurable sensors
+- **Scalable training** — DD-PPO for distributed multi-GPU training, VER trainer for high-throughput rollouts
+- **Hierarchical RL** — Two-layer HRL with PDDL-based planners and learned low-level skills
+- **Gym-compatible** — Full OpenAI Gym interface so any RL library can interact with Habitat environments
+- **Hydra configuration** — Composable YAML configs for tasks, agents, sensors, and training hyperparameters
+
+<Note>
+  Habitat-Lab requires Python 3.9+ and CMake 3.14+. GPU support is recommended for training but not required for environment interaction.
+</Note>

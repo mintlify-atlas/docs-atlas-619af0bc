@@ -1,26 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Habitat-Lab",
+  "projectType": "ai-ml",
+  "projectName": "Habitat-Lab",
+  "projectDescription": "A modular high-level library for end-to-end development in embodied AI, enabling training and evaluation of agents across navigation, rearrangement, and human-robot interaction tasks in photorealistic indoor simulations.",
   "theme": "palm",
-  "colors": {
-    "primary": "#478dc5"
-  },
-  "favicon": "https://icons.duckduckgo.com/ip3/aihabitat.org.ico",
-  "logo": {
-    "light": "https://media.brand.dev/7dfc909f-d226-42fe-84e4-7a85ea728924.png",
-    "dark": "https://media.brand.dev/7dfc909f-d226-42fe-84e4-7a85ea728924.png"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/facebookresearch/habitat-lab"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/facebookresearch/habitat-lab"
-    }
-  },
+  "primaryColor": "#478dc5",
+  "lightColor": null,
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -102,5 +87,39 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Flexible task definitions for navigation, rearrangement, instruction following, and question answering",
+    "Support for diverse embodied agents including commercial robots (Spot, Fetch) and humanoids",
+    "RL and IL training algorithms including PPO, DD-PPO, HRL, and imitation learning",
+    "Multi-agent simulation with human-robot interaction in Habitat 3.0",
+    "Human-in-the-loop (HITL) framework for interactive data collection and evaluation",
+    "Gym-compatible interface for standard RL training pipelines",
+    "Hydra-based hierarchical configuration system",
+    "VectorEnv and ThreadedVectorEnv for parallelized environment rollouts"
+  ],
+  "publicApiSurface": [
+    "habitat.Env",
+    "habitat.RLEnv",
+    "habitat.VectorEnv",
+    "habitat.ThreadedVectorEnv",
+    "habitat.Agent",
+    "habitat.Benchmark",
+    "habitat.Dataset",
+    "habitat.EmbodiedTask",
+    "habitat.Measure",
+    "habitat.Sensor",
+    "habitat.SensorSuite",
+    "habitat.Simulator",
+    "habitat.registry",
+    "habitat.get_config",
+    "habitat.gym.make_gym_from_config",
+    "habitat_baselines.run",
+    "registry.register_task",
+    "registry.register_sensor",
+    "registry.register_measure",
+    "registry.register_simulator",
+    "registry.register_dataset",
+    "registry.register_env"
+  ]
 }

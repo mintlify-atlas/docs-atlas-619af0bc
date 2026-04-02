@@ -1,0 +1,258 @@
+---
+title: "Configuration System"
+description: "Understand and use the Hydra-based configuration system in Habitat-Lab, including config file hierarchy, structured configs, runtime overrides, and programmatic access."
+---
+
+Habitat-Lab uses [Hydra](https://hydra.cc) for configuration management. The system composes a final config at runtime from a hierarchy of YAML files, structured dataclass configs registered in a ConfigStore, and command-line overrides. This replaces the older YACS-based approach and adds type validation, config group composition, and seamless SLURM integration.
+
+## How configs are composed
+
+Hydra builds the **Output Config** by merging:
+
+1. **Structured Configs** — Python dataclasses registered in the `ConfigStore`. These define all keys, their types, and default values. Habitat's structured configs live in `habitat-lab/habitat/config/default_structured_configs.py` and `habitat-baselines/habitat_baselines/config/default_structured_configs.py`.
+2. **Config Group Options** — YAML files organized into config groups (directories). For example, all task configs live under the `habitat/task` group.
+3. **Defaults List** — The ordered list at the top of the primary YAML that pulls in config group options.
+4. **Overrides** — Values in `_self_` (the primary YAML itself) or on the command line that override earlier layers.
+
+## Config directory structure
+
+```
+habitat-lab/habitat/config/
+├── benchmark/          # primary configs (pass to get_config or --config-name)
+│   ├── nav/
+│   └── rearrange/
+├── habitat/            # habitat config group options
+│   ├── dataset/
+│   ├── simulator/
+│   └── task/
+└── test/               # test configs
+
+habitat-baselines/habitat_baselines/config/
+├── pointnav/           # baselines benchmark configs
+├── rearrange/
+├── eqa/
+├── social_nav/
+└── habitat_baselines/  # baselines config group options
+    └── rl/
+        └── policy/
+```
+
+<Note>
+Benchmark configs under `benchmark/` are the **primary configs** you pass to `--config-name` or `habitat.get_config()`. They reference the other groups in their defaults list.
+</Note>
+
+## A minimal benchmark config
+
+```yaml
+# @package _global_
+
+defaults:
+  - /habitat: habitat_config_base          # core habitat config
+  - /habitat/task: pointnav               # task definition
+  - /habitat/simulator/agents:
+    - rgbd_agent                          # agent sensor setup
+  - /habitat/dataset/pointnav: gibson     # dataset
+  - _self_                                # values below override the above
+
+habitat:
+  environment:
+    max_episode_steps: 500
+  simulator:
+    agents:
+      rgbd_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 256
+            height: 256
+          depth_sensor:
+            width: 256
+            height: 256
+```
+
+The `_self_` entry means values defined in this file win over the merged group options. Place it last in the defaults list to apply overrides after all dependencies are loaded.
+
+## Reading configs in Python
+
+Use `habitat.get_config` with a path relative to the config search path:
+
+```python
+import habitat
+
+config = habitat.get_config("benchmark/nav/pointnav/pointnav_gibson.yaml")
+```
+
+The config object is **read-only** by default (enforced by OmegaConf).
+
+## Modifying configs at runtime with `read_write`
+
+Wrap the config in `read_write` to make temporary mutations before passing it to a trainer or environment:
+
+```python
+from habitat.config.read_write import read_write
+from habitat.config.default import get_agent_config
+from habitat.config.default_structured_configs import ThirdRGBSensorConfig
+
+config = habitat.get_config("benchmark/nav/pointnav/pointnav_gibson.yaml")
+
+with read_write(config):
+    config.habitat.simulator.concur_render = False
+    agent_config = get_agent_config(config.habitat.simulator)
+    agent_config.sim_sensors.update(
+        {"third_rgb_sensor": ThirdRGBSensorConfig(height=512, width=512)}
+    )
+```
+
+## Command-line overrides
+
+Pass `key=value` pairs after `--config-name` to override any config value:
+
+```bash
+# Override scalar values
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ddppo_pointnav.yaml \
+  habitat.environment.max_episode_steps=250 \
+  habitat_baselines.total_num_steps=100
+
+# Override a config group option (swap dataset)
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ddppo_pointnav.yaml \
+  benchmark/nav/pointnav=pointnav_hm3d
+```
+
+Switch from training to evaluation without changing the config file:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml \
+  habitat_baselines.evaluate=True
+```
+
+## Overriding in YAML files
+
+You can also override a config group option inside a YAML defaults list:
+
+```yaml
+defaults:
+  - any_base_config
+  - override /habitat/dataset/pointnav: gibson
+```
+
+## Defining a custom structured config
+
+Extend the config system by registering new dataclasses in the ConfigStore:
+
+```python
+from dataclasses import dataclass
+from hydra.core.config_store import ConfigStore
+
+cs = ConfigStore.instance()
+
+@dataclass
+class CustomStructuredConfig:
+    custom_config_key: int = 42
+
+cs.store(
+    group="habitat/custom_structured_config",
+    name="custom_structured_config",
+    node=CustomStructuredConfig,
+)
+```
+
+Then reference it in a YAML defaults list:
+
+```yaml
+defaults:
+  - /habitat/custom_structured_config: custom_structured_config
+```
+
+## Key config path reference
+
+### Environment
+
+| Key | Description |
+| --- | --- |
+| `habitat.environment.max_episode_steps` | Maximum steps per episode before forced termination. |
+| `habitat.environment.max_episode_seconds` | Maximum wall-clock seconds per episode. |
+
+### Dataset
+
+| Key | Description |
+| --- | --- |
+| `habitat.dataset.type` | Dataset class key, e.g. `"PointNav-v1"`, `"ObjectNav-v1"`, `"RearrangeDataset-v0"`. |
+| `habitat.dataset.data_path` | Path to episode data file (supports `{split}` interpolation). |
+| `habitat.dataset.split` | Split name substituted into `data_path`, e.g. `"train"` or `"val"`. |
+| `habitat.dataset.scenes_dir` | Root directory containing scene mesh files. |
+
+### Task
+
+| Key | Description |
+| --- | --- |
+| `habitat.task.type` | Registered task class, e.g. `"Nav-v0"`, `"RearrangePickTask-v0"`. |
+| `habitat.task.reward_measure` | Name of the measurement used as RL reward. |
+| `habitat.task.success_measure` | Name of the measurement used as success criterion. |
+| `habitat.task.end_on_success` | End the episode when success is detected. |
+| `habitat.task.task_spec` | PDDL plan name for `RearrangePddlTask-v0`. |
+
+### Simulator
+
+| Key | Description |
+| --- | --- |
+| `habitat.simulator.type` | Simulator backend (default `"Sim-v0"`). |
+| `habitat.simulator.agents` | Dictionary of agent configs, keyed by agent name. |
+| `habitat.simulator.kinematic_mode` | Use kinematic (non-physics) simulation. |
+| `habitat.simulator.ctrl_freq` | Controller frequency in Hz. |
+| `habitat.simulator.ac_freq_ratio` | Physics steps per control step. |
+
+### Baselines
+
+| Key | Description |
+| --- | --- |
+| `habitat_baselines.trainer_name` | Trainer class: `"ppo"`, `"ddppo"`, `"ver"`, `"eqa-cnn-pretrain"`, etc. |
+| `habitat_baselines.evaluate` | Set to `True` to run in evaluation mode. |
+| `habitat_baselines.num_environments` | Parallel environments per training worker. |
+| `habitat_baselines.total_num_steps` | Total environment steps (use `-1` for `num_updates`). |
+| `habitat_baselines.num_updates` | Policy update iterations when `total_num_steps=-1`. |
+| `habitat_baselines.checkpoint_folder` | Directory for saving checkpoints. |
+| `habitat_baselines.eval_ckpt_path_dir` | Checkpoint path or directory for evaluation. |
+| `habitat_baselines.tensorboard_dir` | TensorBoard log directory. |
+| `habitat_baselines.writer_type` | Logging backend: `"tb"` (TensorBoard) or `"wb"` (Weights & Biases). |
+
+For a full list of task-specific keys including actions, sensors, and measurements for both navigation and rearrangement tasks, see `habitat-lab/habitat/config/CONFIG_KEYS.md` in the repository.
+
+## Hyperparameter sweeps
+
+Hydra supports multi-run sweeps natively. Launch three experiments with different learning rates:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav.yaml \
+  --multirun habitat_baselines.rl.ppo.lr=2.5e-4,2.5e-5,2.5e-6
+```
+
+## SLURM integration
+
+Install the Submitit launcher and enable it on the command line:
+
+```bash
+pip install hydra-submitit-launcher --upgrade
+
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav.yaml \
+  hydra/launcher=submitit_slurm \
+  --multirun
+```
+
+## OmegaConf variable interpolation
+
+Config values can reference other config values using `${...}` syntax. For example, the simulator seed is set to match the top-level habitat seed:
+
+```python
+from omegaconf import II
+from dataclasses import dataclass
+
+@dataclass
+class SimulatorConfig(HabitatBaseConfig):
+    seed: int = II("habitat.seed")  # interpolates from habitat.seed at runtime
+```
+
+This is the same mechanism used throughout Habitat's structured configs in `default_structured_configs.py`.

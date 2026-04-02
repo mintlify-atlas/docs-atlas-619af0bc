@@ -1,0 +1,207 @@
+---
+title: 'Troubleshooting'
+description: 'Solutions to common issues with Habitat-Lab, including graphics errors, VectorEnv debugging, and environment setup.'
+---
+
+This page covers common issues and how to resolve them. If you file a GitHub issue, include:
+
+- Your OS, GPU model, and driver version.
+- Troubleshooting steps you have already attempted.
+- Screenshots or terminal output, if applicable.
+
+For questions not covered here, open a discussion on [GitHub Discussions](https://github.com/facebookresearch/habitat-lab/discussions).
+
+## Common issues
+
+<AccordionGroup>
+  <Accordion title="interactive_play.py crashes with X Error BadAccess">
+    On some systems, `examples/interactive_play.py` crashes with:
+
+    ```
+    X Error of failed request:  BadAccess (attempt to access private resource denied)
+    ```
+
+    This is a known issue caused by how the underlying `pygame` library interacts with Habitat's rendering backend. A replacement for the `interactive_play` script is in progress as part of the [habitat-hitl](https://github.com/facebookresearch/habitat-lab/blob/main/habitat-hitl/README.md) effort.
+
+    **Workaround:** Use `examples/example.py` for headless testing while `interactive_play.py` is being replaced.
+  </Accordion>
+
+  <Accordion title="Unable to create windowless context / cannot find CUDA device">
+    The following error means Habitat cannot find a usable GPU via EGL:
+
+    ```
+    Platform::WindowlessEglApplication::tryCreateContext(): unable to find CUDA device 0 among 2 EGL devices in total
+    WindowlessContext: Unable to create windowless context
+    ```
+
+    Common causes:
+
+    - Outdated, missing, or invalid graphics drivers.
+    - On Linux: a missing or incomplete `libglvnd` installation.
+
+    Follow the [graphics troubleshooting steps](#graphics-troubleshooting) below. If the issue persists, file a GitHub issue.
+  </Accordion>
+
+  <Accordion title="Black squares on NVIDIA A100">
+    NVIDIA A100 GPUs can produce black rectangular artifacts on rendered sensor observations in some environments.
+
+    **Fix:** Update your CUDA drivers to at least version 12.2.
+
+    See the upstream habitat-sim issue for details: [habitat-sim#2310](https://github.com/facebookresearch/habitat-sim/issues/2310).
+  </Accordion>
+
+  <Accordion title="Debugging VectorEnv — can't set breakpoints in worker processes">
+    `VectorEnv` spawns worker processes, which makes it impossible to use a standard Python debugger (breakpoints, `pdb`, etc.) inside environment methods.
+
+    Set the `HABITAT_ENV_DEBUG` environment variable to `1` to switch to `ThreadedVectorEnv`, which runs workers as threads inside the main process:
+
+    ```bash
+    HABITAT_ENV_DEBUG=1 python your_training_script.py
+    ```
+
+    `ThreadedVectorEnv` provides identical behaviour to `VectorEnv` but allows you to place breakpoints inside environment code. It is slower due to Python's GIL, so switch back to `VectorEnv` (unset the variable) for production training runs.
+
+    This behaviour is implemented in `habitat_baselines/common/habitat_env_factory.py`:
+
+    ```python
+    if int(os.environ.get("HABITAT_ENV_DEBUG", 0)):
+        logger.warn(
+            "Using the debug Vector environment interface. Expect slower performance."
+        )
+        vector_env_cls = ThreadedVectorEnv
+    else:
+        vector_env_cls = VectorEnv
+    ```
+  </Accordion>
+
+  <Accordion title="Windows is not officially supported">
+    Habitat does not officially support Windows. It has been reported to work from within the Linux Subsystem for Windows (WSL) or inside a virtual machine running Linux. Use WSL 2 with GPU passthrough for best results.
+  </Accordion>
+</AccordionGroup>
+
+## Graphics troubleshooting
+
+These steps help narrow down rendering issues regardless of the specific error message.
+
+### General steps
+
+<Steps>
+  <Step title="Increase logging verbosity">
+    Launch your script with verbose environment variables to get detailed output from the renderer:
+
+    ```bash
+    HABITAT_SIM_LOG=verbose \
+    MAGNUM_LOG=verbose \
+    MAGNUM_GPU_VALIDATION=ON \
+        python examples/example.py
+    ```
+
+    Available `HABITAT_SIM_LOG` levels (most verbose first): `VeryVerbose`, `Verbose`/`Debug`, `Warning` (default), `Error`.
+
+    Available `MAGNUM_LOG` levels: `verbose`, `default`, `quiet`.
+  </Step>
+
+  <Step title="Download test assets">
+    From the root of your `habitat-lab` or `habitat-sim` repository:
+
+    ```bash
+    python -m habitat_sim.utils.datasets_download \
+        --uids habitat_test_scenes \
+        --data-path data/
+    ```
+  </Step>
+
+  <Step title="Run the minimal viewer">
+    Verify whether the problem reproduces on the simplest possible setup:
+
+    ```bash
+    # With habitat-sim installed via conda
+    MAGNUM_LOG=verbose MAGNUM_GPU_VALIDATION=ON \
+        habitat-viewer data/scene_datasets/habitat-test-scenes/skokloster-castle.glb
+
+    # With habitat-sim built from source
+    MAGNUM_LOG=verbose MAGNUM_GPU_VALIDATION=ON \
+        {habitat-sim}/build/viewer data/scene_datasets/habitat-test-scenes/skokloster-castle.glb
+    ```
+  </Step>
+
+  <Step title="Create a fresh conda environment">
+    After extended use, environment dependencies can drift from baseline and cause subtle conflicts. Creating a new environment from scratch often resolves hard-to-diagnose issues:
+
+    ```bash
+    conda create -n habitat-fresh python=3.9 cmake=3.14.0
+    conda activate habitat-fresh
+    conda install habitat-sim withbullet -c conda-forge -c aihabitat
+    pip install -e habitat-lab
+    ```
+  </Step>
+</Steps>
+
+### Linux-specific steps
+
+<AccordionGroup>
+  <Accordion title="Check NVIDIA driver and CUDA version">
+    Run `nvidia-smi`. The header should show the expected driver and CUDA versions. For example:
+
+    ```
+    NVIDIA-SMI 535.129.03   Driver Version: 535.129.03   CUDA Version: 12.2
+    ```
+
+    If the command fails or shows unexpected versions, reinstall your NVIDIA driver from the [official NVIDIA site](https://www.nvidia.com/Download/index.aspx).
+  </Accordion>
+
+  <Accordion title="Verify EGL availability">
+    The command `eglinfo` should run without error and list your hardware GPU as an available device. If it fails, your EGL installation is incomplete.
+
+    On NVIDIA or AMD systems, confirm the hardware GPU appears in the output — not just software rendering devices.
+  </Accordion>
+
+  <Accordion title="Check libglvnd installation (NVIDIA)">
+    A missing or misconfigured `libglvnd` is a common source of EGL failures on NVIDIA systems.
+
+    **Step 1 — Verify libglvnd is installed:**
+
+    ```bash
+    # Debian/Ubuntu
+    apt list --installed | grep libglvnd
+
+    # RHEL/Fedora
+    dnf list installed | grep libglvnd
+    ```
+
+    **Step 2 — Verify the NVIDIA EGL vendor entry exists:**
+
+    Check for a file in `/usr/share/glvnd/egl_vendor.d/` named `10_nvidia.json`. If it is missing, create it manually:
+
+    ```json
+    {
+        "file_format_version" : "1.0.0",
+        "ICD" : {
+            "library_path" : "libEGL_nvidia.so.0"
+        }
+    }
+    ```
+
+    Confirm the `libEGL_nvidia` library is present:
+
+    ```bash
+    ldconfig -p | grep libEGL
+    ```
+
+    If `libEGL_nvidia` is missing, reinstall your NVIDIA driver. If multiple copies exist, the driver installation may be corrupted.
+  </Accordion>
+
+  <Accordion title="CPU rendering (no GPU)">
+    If you do not have a GPU, verify your CPU graphics drivers (Mesa or equivalent) are working correctly. Run `eglinfo` and confirm a software renderer is listed. Note that CPU rendering is significantly slower and not recommended for training.
+  </Accordion>
+
+  <Accordion title="Wayland vs X11">
+    If running on Wayland, try switching to X11 (or vice versa). While Habitat should work with either display protocol, switching can help isolate display-related issues:
+
+    ```bash
+    # Force X11 in a Wayland session
+    export DISPLAY=:0
+    export WAYLAND_DISPLAY=
+    ```
+  </Accordion>
+</AccordionGroup>

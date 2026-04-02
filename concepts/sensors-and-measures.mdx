@@ -1,0 +1,296 @@
+---
+title: "Sensors and Measures"
+description: "The Sensor and Measure base classes, SensorTypes enum, SensorSuite bundling, and how to register custom sensors and measures."
+---
+
+Observations in Habitat-Lab come from two sources: **sensors** attached to the simulator and agents, and **lab sensors** attached to the task. Both produce values that are merged into a single observation dict returned from `env.reset()` and `env.step()`. **Measures** are a separate concept — they compute privileged metrics (rewards, success flags, distances) that are not necessarily exposed to the agent.
+
+---
+
+## `SensorTypes`
+
+Every sensor declares its type via the `SensorTypes` enum defined in `habitat/core/simulator.py`:
+
+```python
+class SensorTypes(Enum):
+    NULL       = 0
+    COLOR      = 1   # RGB or RGBA image
+    DEPTH      = 2   # depth image
+    NORMAL     = 3   # surface normal map
+    SEMANTIC   = 4   # integer instance/class id per pixel
+    PATH       = 5   # waypoint path
+    POSITION   = 6   # 3-D position vector
+    FORCE      = 7   # contact / collision force (also used for bump sensors)
+    TENSOR     = 8   # generic multi-dimensional tensor
+    TEXT       = 9   # string observation
+    MEASUREMENT = 10 # scalar or vector measurement
+    HEADING    = 11  # compass heading
+    TACTILE    = 12  # tactile / touch sensor array
+    TOKEN_IDS  = 13  # discrete token sequence (e.g. language goals)
+```
+
+The sensor type is metadata used by downstream code to interpret observations correctly (e.g. display pipelines, normalization). It does not affect the observation space shape.
+
+---
+
+## The `Sensor` base class
+
+Defined in `habitat/core/simulator.py`. To implement a sensor, subclass `Sensor` and provide three private methods plus `get_observation`:
+
+```python
+class Sensor(metaclass=abc.ABCMeta):
+    uuid: str               # unique key in the observation dict
+    sensor_type: SensorTypes
+    observation_space: Space
+
+    def _get_uuid(self, *args, **kwargs) -> str: ...
+    def _get_sensor_type(self, *args, **kwargs) -> SensorTypes: ...
+    def _get_observation_space(self, *args, **kwargs) -> Space: ...
+
+    @abc.abstractmethod
+    def get_observation(self, *args, **kwargs) -> Any: ...
+```
+
+The constructor calls all three `_get_*` methods and stores the results. If the sensor config contains a `uuid` field, it overrides the value returned by `_get_uuid`.
+
+### Built-in sensor wrappers
+
+Habitat-Lab provides abstract wrappers for the most common sensor types:
+
+| Class | UUID | Type |
+|---|---|---|
+| `RGBSensor` | `"rgb"` | `COLOR` |
+| `DepthSensor` | `"depth"` | `DEPTH` |
+| `SemanticSensor` | `"semantic"` | `SEMANTIC` |
+| `BumpSensor` | `"bump"` | `FORCE` |
+
+These classes handle the UUID and type; subclasses only need to implement `_get_observation_space` and `get_observation`.
+
+---
+
+## Registering a custom sensor
+
+Use `@registry.register_sensor` to make a sensor available by string key in config. The name defaults to the class name but can be overridden.
+
+The following example is taken directly from `examples/register_new_sensors_and_measures.py`:
+
+```python
+import numpy as np
+from gym import spaces
+import habitat
+from habitat.config.default_structured_configs import LabSensorConfig
+from dataclasses import dataclass
+from omegaconf import MISSING
+
+@habitat.registry.register_sensor(name="my_supercool_sensor")
+class AgentPositionSensor(habitat.Sensor):
+    def __init__(self, sim, config, **kwargs):
+        super().__init__(config=config)
+        self._sim = sim
+        print("The answer to life is", self.config.answer_to_life)
+
+    def _get_uuid(self, *args, **kwargs) -> str:
+        return "agent_position"
+
+    def _get_sensor_type(self, *args, **kwargs):
+        return habitat.SensorTypes.POSITION
+
+    def _get_observation_space(self, *args, **kwargs):
+        return spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=(3,),
+            dtype=np.float32,
+        )
+
+    def get_observation(self, observations, *args, episode, **kwargs):
+        return self._sim.get_agent_state().position
+
+
+@dataclass
+class AgentPositionSensorConfig(LabSensorConfig):
+    type: str = "my_supercool_sensor"
+    answer_to_life: int = MISSING   # no default — must be set in config
+```
+
+Add the sensor to an experiment at runtime:
+
+```python
+with habitat.config.read_write(config):
+    config.habitat.task.lab_sensors["agent_position_sensor"] = (
+        AgentPositionSensorConfig(answer_to_life=42)
+    )
+
+with habitat.Env(config=config) as env:
+    obs = env.reset()
+    print(obs["agent_position"])   # shape (3,) float32
+```
+
+<Note>
+Lab sensors live under `habitat.task.lab_sensors` in the config and belong to the task's `SensorSuite`. Simulator sensors (cameras, depth, semantic) live under `habitat.simulator.agents.<agent>.sim_sensors` and are managed by the simulator directly.
+</Note>
+
+---
+
+## `SensorSuite`
+
+`SensorSuite` is a container that holds an ordered dict of sensors and exposes a combined `observation_spaces` dict. It is used both by the simulator (for rendered sensors) and by each task (for lab sensors).
+
+```python
+from habitat.core.simulator import SensorSuite
+
+suite = SensorSuite([sensor_a, sensor_b])
+print(suite.sensors)            # OrderedDict of uuid -> Sensor
+print(suite.observation_spaces) # spaces.Dict of uuid -> Space
+
+obs = suite.get_observations(
+    observations=sim_obs,
+    episode=current_episode,
+    task=task,
+    should_time=True,
+)
+```
+
+`Env` merges the simulator suite and task suite when building `env.observation_space`:
+
+```python
+self.observation_space = spaces.Dict({
+    **self._sim.sensor_suite.observation_spaces.spaces,
+    **self._task.sensor_suite.observation_spaces.spaces,
+})
+```
+
+---
+
+## The `Measure` base class
+
+Defined in `habitat/core/embodied_task.py`. Measures are similar to sensors but are intended for privileged information — they are **not** part of the agent's observation space, but are accessible via `env.get_metrics()`.
+
+```python
+class Measure:
+    uuid: str
+    _metric: Any   # current value, set by reset_metric / update_metric
+
+    def _get_uuid(self, *args, **kwargs) -> str: ...
+    def reset_metric(self, *args, **kwargs) -> None: ...   # called on env.reset()
+    def update_metric(self, *args, **kwargs) -> None: ...  # called on env.step()
+    def get_metric(self): return self._metric
+```
+
+### Registering a custom measure
+
+The following example from `examples/register_new_sensors_and_measures.py` shows a measure that captures episode metadata on reset and drops a custom field after the first step:
+
+```python
+from dataclasses import dataclass
+from typing import Any
+import habitat
+from habitat.config.default_structured_configs import MeasurementConfig
+
+@habitat.registry.register_measure
+class EpisodeInfoExample(habitat.Measure):
+    def __init__(self, sim, config, **kwargs: Any):
+        self._config = config
+        super().__init__()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "episode_info"
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        # Contains all episode attributes plus a custom field
+        self._metric = vars(episode).copy()
+        self._metric["my_value"] = self._config.VALUE
+
+    def update_metric(self, *args: Any, episode, action, **kwargs: Any):
+        # After the first step, the custom field is gone
+        self._metric = vars(episode).copy()
+
+
+@dataclass
+class EpisodeInfoExampleConfig(MeasurementConfig):
+    type: str = "EpisodeInfoExample"
+    VALUE: int = -1
+```
+
+Add it to an experiment:
+
+```python
+with habitat.config.read_write(config):
+    config.habitat.task.measurements["episode_info_example"] = (
+        EpisodeInfoExampleConfig(VALUE=5)
+    )
+
+with habitat.Env(config=config) as env:
+    env.reset()
+    metrics = env.get_metrics()
+    assert metrics["episode_info"]["my_value"] == 5
+
+    env.step("move_forward")
+    metrics = env.get_metrics()
+    assert "my_value" not in metrics["episode_info"]
+```
+
+---
+
+## Observation space structure
+
+The observation dict from `env.reset()` / `env.step()` is keyed by sensor UUID. The shapes depend on simulator configuration and sensor type:
+
+```python
+obs = env.reset()
+
+# Rendered sensors (from simulator)
+obs["rgb"]       # shape (H, W, 3)  uint8
+obs["depth"]     # shape (H, W, 1)  float32
+obs["semantic"]  # shape (H, W, 1)  int32
+
+# Lab sensors (from task)
+obs["agent_position"]  # shape (3,)  float32
+obs["compass"]         # shape (1,)  float32  (radians)
+obs["gps"]             # shape (2,)  float32  (meters, relative to start)
+obs["objectgoal"]      # shape (1,)  int64    (category id)
+```
+
+Inspect the full observation space at any time:
+
+```python
+for uuid, space in env.observation_space.spaces.items():
+    print(f"{uuid}: {space}")
+```
+
+---
+
+## Navigation lab sensors
+
+Lab sensors are added via the `defaults` list or programmatically:
+
+```yaml
+defaults:
+  - /habitat/task/lab_sensors:
+    - compass_sensor
+    - gps_sensor
+    - objectgoal_sensor
+    - pointgoal_with_gps_compass_sensor
+```
+
+| Config key | UUID | Description |
+|---|---|---|
+| `compass_sensor` | `"compass"` | Angle difference (radians) from start rotation to current rotation. |
+| `gps_sensor` | `"gps"` | 2-D displacement (meters) from start position to current position. |
+| `objectgoal_sensor` | `"objectgoal"` | Integer category ID of the navigation target. |
+| `pointgoal_with_gps_compass_sensor` | `"pointgoal_with_gps_compass"` | Polar coordinates to point goal in agent frame. |
+| `instance_imagegoal_sensor` | `"instance_imagegoal"` | Rendered goal image for instance image navigation. |
+
+---
+
+## Rearrangement lab sensors
+
+| Config key | Description |
+|---|---|
+| `relative_resting_pos_sensor` | 3-D vector from end effector to desired resting position. |
+| `is_holding_sensor` | `1.0` if grasping an object, else `0.0`. |
+| `end_effector_sensor` | 3-D Cartesian position of the end effector in robot base frame. |
+| `joint_sensor` | Current joint positions of the robot arm. |
+| `goal_sensor` | Relative position from end effector to goal placement location. |
+| `target_start_gps_compass_sensor` | Polar coordinates to each object's initial position. |
+| `target_goal_gps_compass_sensor` | Polar coordinates to each object's goal position. |

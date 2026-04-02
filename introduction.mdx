@@ -1,0 +1,162 @@
+---
+title: "Introduction"
+description: "Habitat-Lab is a modular high-level library for end-to-end development in embodied AI, built on Habitat-Sim."
+---
+
+Habitat-Lab is an open-source research platform from Meta AI that provides everything you need to train and evaluate embodied AI agents in photorealistic 3D indoor environments. It is designed to support a wide range of tasks — from point-goal navigation and object rearrangement to social interaction between robots and humanoids — through a clean, extensible Python API.
+
+## What is embodied AI?
+
+Embodied AI research studies agents that perceive and act in a physical (or simulated) world. Rather than operating on static datasets, an embodied agent receives sensor observations from an environment, takes actions that change the environment's state, and must accomplish goals such as navigating to a location, picking up an object, or collaborating with a human.
+
+Habitat-Lab provides the full stack: the environment abstractions, task definitions, agent configurations, training algorithms, and evaluation tools needed to run this research at scale.
+
+## History
+
+<AccordionGroup>
+  <Accordion title="Habitat 1.0 (ICCV 2019)">
+    The original Habitat platform introduced a high-performance simulation framework for embodied AI. Habitat-Sim provided photorealistic rendering at thousands of frames per second, while Habitat-Lab defined the core environment API: `Env`, `Dataset`, `Episode`, `Task`, `Sensor`, and `Measure`. The initial focus was point-goal navigation on the Matterport3D and Gibson scene datasets.
+
+    **Paper:** [Habitat: A Platform for Embodied AI Research](https://arxiv.org/abs/1904.01201) — Savva et al., ICCV 2019
+  </Accordion>
+  <Accordion title="Habitat 2.0 (NeurIPS 2021)">
+    Habitat 2.0 expanded the platform to support mobile manipulation tasks and introduced the ReplicaCAD dataset of fully articulated indoor scenes. New task types included Pick, Place, Open/Close drawer, and long-horizon composite rearrangement tasks defined via PDDL plans. The Habitat-Baselines sub-package was introduced, providing PPO and Hierarchical RL (HRL) training algorithms with a two-layer policy architecture.
+
+    **Paper:** [Habitat 2.0: Training Home Assistants to Rearrange their Habitat](https://arxiv.org/abs/2106.14405) — Szot et al., NeurIPS 2021
+  </Accordion>
+  <Accordion title="Habitat 3.0 (2023)">
+    Habitat 3.0 introduced multi-agent scenarios where robots and humanoid avatars share and interact within the same environments. New capabilities include social navigation (a robot finding and following a human), social rearrangement (a robot and human collaborating on object placement), and the Human-in-the-Loop (HITL) framework for bringing real users into simulation. The HSSD scene dataset and animatable humanoid models were released alongside this version.
+
+    **Paper:** [Habitat 3.0: A Co-Habitat for Humans, Avatars and Robots](https://arxiv.org/abs/2310.13724) — Puig et al., 2023
+  </Accordion>
+</AccordionGroup>
+
+## Architecture overview
+
+Habitat-Lab is organized as four closely related packages that you can install independently:
+
+<CardGroup cols={2}>
+  <Card title="habitat-lab" icon="cube">
+    The core library. Defines the fundamental abstractions (`Env`, `Task`, `Sensor`, `Measure`, `Dataset`, `Episode`) and the registry system for extending them. Provides the Gym-compatible interface and Hydra-based configuration. Required by all other packages.
+  </Card>
+  <Card title="habitat-baselines" icon="chart-line">
+    Optional training algorithms and agent architectures. Includes PPO (single and distributed DD-PPO), VER high-throughput trainer, Hierarchical RL with PDDL planners, and imitation learning. Built on PyTorch. Install separately with `pip install -e habitat-baselines`.
+  </Card>
+  <Card title="habitat-hitl" icon="desktop">
+    Optional Human-in-the-Loop framework. Provides real-time rendering, GUI input handling, a 3D viewport, and VR integration so researchers can place human users inside running simulations for data collection and agent evaluation.
+  </Card>
+  <Card title="habitat-sim" icon="microchip">
+    The underlying C++/Python simulator (separate repository). Handles physics, rendering, asset loading, and low-level sensor simulation. Installed via conda from the `aihabitat` channel. Habitat-Lab delegates all physics and rendering to Habitat-Sim.
+  </Card>
+</CardGroup>
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Your Research Code                  │
+├─────────────────────────────────────────────────────┤
+│         habitat-hitl (optional, HITL apps)          │
+├────────────────────────┬────────────────────────────┤
+│  habitat-baselines     │    habitat-lab (core)       │
+│  (optional, training)  │  Env, Task, Sensor, Measure │
+├────────────────────────┴────────────────────────────┤
+│                    habitat-sim                       │
+│        Physics · Rendering · Asset loading           │
+└─────────────────────────────────────────────────────┘
+```
+
+## Core abstractions
+
+The `habitat-lab` core defines six key abstractions you will encounter throughout the library:
+
+| Abstraction | Description |
+|---|---|
+| `Env` | The top-level environment. Wraps a `Simulator`, a `Dataset`, and a `Task` and connects them together. Compatible with the OpenAI Gym interface via `RLEnv`. |
+| `Dataset` | A collection of `Episode` objects for a given data split. Handles loading from disk, scene enumeration, and episode iteration. |
+| `Episode` | A single task instance: initial agent pose, scene ID, goal specification, and any task-specific metadata. |
+| `Task` | Defines termination criteria, success conditions, and which sensors and measures are active. Built on top of the simulator and dataset. |
+| `Sensor` | Produces observations at each step. Can wrap physical sensors (RGB, depth, semantic) or provide abstract task-specific data (agent position, goal vector). |
+| `Measure` | Computes scalar or structured metrics at each step (e.g. distance to goal, success, SPL). Used for reward signals and benchmarking. |
+
+## Feature highlights
+
+<CardGroup cols={2}>
+  <Card title="Flexible task definitions" icon="list-check">
+    Define single-agent and multi-agent tasks using a composable YAML + Hydra configuration system. Extend any task, sensor, or measure from outside the source code using the `@registry` decorators.
+  </Card>
+  <Card title="Diverse embodied agents" icon="robot">
+    Configure and instantiate commercial robots (Fetch, Spot, Franka) and animatable humanoids. Attach any combination of RGB, depth, semantic, GPS, compass, and custom sensors.
+  </Card>
+  <Card title="Gym-compatible interface" icon="gamepad">
+    Every Habitat environment exposes the standard `gym.Env` interface. Use `gym.make("HabitatRenderPick-v0")` to load tasks or wrap any config with `habitat.gym.make_gym_from_config`.
+  </Card>
+  <Card title="Hydra configuration" icon="sliders">
+    All tasks, agents, sensors, and training runs are fully described by composable YAML configs. Override any key on the command line without modifying source files.
+  </Card>
+  <Card title="Scalable RL training" icon="bolt">
+    DD-PPO enables distributed training across multiple GPUs and nodes. The VER trainer uses variable experience rollouts for higher throughput on heterogeneous hardware.
+  </Card>
+  <Card title="Human-in-the-loop" icon="user">
+    The HITL framework provides real-time rendering and GUI/VR interaction so human participants can collaborate with or evaluate trained agents inside running simulations.
+  </Card>
+</CardGroup>
+
+## Research papers
+
+If you use Habitat-Lab in your research, please cite the relevant papers:
+
+<AccordionGroup>
+  <Accordion title="Habitat 3.0 (2023)">
+    ```bibtex
+    @misc{puig2023habitat3,
+          title  = {Habitat 3.0: A Co-Habitat for Humans, Avatars and Robots},
+          author = {Xavi Puig and Eric Undersander and Andrew Szot and Mikael Dallaire Cote
+                    and Ruslan Partsey and Jimmy Yang and Ruta Desai and Alexander William Clegg
+                    and Michal Hlavac and Tiffany Min and Theo Gervet and Vladimír Vondruš
+                    and Vincent-Pierre Berges and John Turner and Oleksandr Maksymets
+                    and Zsolt Kira and Mrinal Kalakrishnan and Jitendra Malik
+                    and Devendra Singh Chaplot and Unnat Jain and Dhruv Batra
+                    and Akshara Rai and Roozbeh Mottaghi},
+          year={2023},
+          archivePrefix={arXiv},
+    }
+    ```
+    [arxiv.org/abs/2310.13724](https://arxiv.org/abs/2310.13724)
+  </Accordion>
+  <Accordion title="Habitat 2.0 (NeurIPS 2021)">
+    ```bibtex
+    @inproceedings{szot2021habitat,
+      title     = {Habitat 2.0: Training Home Assistants to Rearrange their Habitat},
+      author    = {Andrew Szot and Alex Clegg and Eric Undersander and Erik Wijmans
+                   and Yili Zhao and John Turner and Noah Maestre and Mustafa Mukadam
+                   and Devendra Chaplot and Oleksandr Maksymets and Aaron Gokaslan
+                   and Vladimir Vondrus and Sameer Dharur and Franziska Meier
+                   and Wojciech Galuba and Angel Chang and Zsolt Kira and Vladlen Koltun
+                   and Jitendra Malik and Manolis Savva and Dhruv Batra},
+      booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+      year      = {2021}
+    }
+    ```
+    [arxiv.org/abs/2106.14405](https://arxiv.org/abs/2106.14405)
+  </Accordion>
+  <Accordion title="Habitat 1.0 (ICCV 2019)">
+    ```bibtex
+    @inproceedings{habitat19iccv,
+      title     = {Habitat: {A} {P}latform for {E}mbodied {AI} {R}esearch},
+      author    = {Manolis Savva and Abhishek Kadian and Oleksandr Maksymets and Yili Zhao
+                   and Erik Wijmans and Bhavana Jain and Julian Straub and Jia Liu
+                   and Vladlen Koltun and Jitendra Malik and Devi Parikh and Dhruv Batra},
+      booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+      year      = {2019}
+    }
+    ```
+    [arxiv.org/abs/1904.01201](https://arxiv.org/abs/1904.01201)
+  </Accordion>
+</AccordionGroup>
+
+## License
+
+Habitat-Lab is [MIT licensed](https://github.com/facebookresearch/habitat-lab/blob/main/LICENSE). Copyright (c) Meta Platforms, Inc. and affiliates.
+
+<Note>
+  Trained models and task datasets derived from Matterport3D or Gibson scene datasets carry additional license restrictions. See the [README](https://github.com/facebookresearch/habitat-lab#license) for details.
+</Note>

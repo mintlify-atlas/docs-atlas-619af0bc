@@ -1,0 +1,550 @@
+---
+title: "Simulator"
+description: "Abstract Simulator interface and Sensor classes that define the contract between Habitat-Lab and any physics or rendering backend."
+---
+
+Habitat-Lab decouples task logic from simulation backends through abstract base classes. The `Simulator` class defines the interface every backend must implement. The `Sensor`, `SensorSuite`, and `SensorTypes` classes describe how observations are produced and packaged. All concrete implementations (such as `HabitatSim` built on Habitat-Sim) fulfil these contracts.
+
+## SensorTypes
+
+`habitat.SensorTypes` is an `Enum` that categorises the kind of data a sensor produces. Use these values when implementing the `_get_sensor_type` method of a custom `Sensor`.
+
+```python
+from habitat.core.simulator import SensorTypes
+
+print(SensorTypes.COLOR)   # SensorTypes.COLOR
+print(SensorTypes.COLOR.value)  # 1
+```
+
+| Name | Value | Description |
+|---|---|---|
+| `NULL` | 0 | No specific type / unclassified. |
+| `COLOR` | 1 | RGB or RGBA color image. |
+| `DEPTH` | 2 | Depth image (single-channel float). |
+| `NORMAL` | 3 | Surface normals. |
+| `SEMANTIC` | 4 | Integer semantic labels per pixel. |
+| `PATH` | 5 | Geometric path data. |
+| `POSITION` | 6 | 3D position vector. |
+| `FORCE` | 7 | Contact force / bump sensor. |
+| `TENSOR` | 8 | Generic tensor data. |
+| `TEXT` | 9 | String or token data. |
+| `MEASUREMENT` | 10 | Scalar or vector measurement. |
+| `HEADING` | 11 | Heading angle. |
+| `TACTILE` | 12 | Tactile sensor data. |
+| `TOKEN_IDS` | 13 | Tokenised text IDs. |
+
+---
+
+## Sensor
+
+`habitat.Sensor` is the abstract base class for all sensors. Subclass it and implement four methods: `_get_uuid`, `_get_sensor_type`, `_get_observation_space`, and `get_observation`.
+
+```python
+from habitat.core.simulator import Sensor, SensorTypes
+from habitat.core.registry import registry
+from gym import spaces
+import numpy as np
+
+@registry.register_sensor
+class CompassSensor(Sensor):
+    def _get_uuid(self, *args, **kwargs) -> str:
+        return "compass"
+
+    def _get_sensor_type(self, *args, **kwargs) -> SensorTypes:
+        return SensorTypes.HEADING
+
+    def _get_observation_space(self, *args, **kwargs) -> spaces.Space:
+        return spaces.Box(
+            low=-np.pi, high=np.pi, shape=(1,), dtype=np.float32
+        )
+
+    def get_observation(self, *args, **kwargs) -> np.ndarray:
+        # compute heading from simulator state ...
+        return np.array([0.0], dtype=np.float32)
+```
+
+### Attributes
+
+<ResponseField name="uuid" type="str">
+  Universally unique identifier string for this sensor instance. Set during `__init__` from `_get_uuid()`, or overridden by `config.uuid` if present.
+</ResponseField>
+
+<ResponseField name="sensor_type" type="SensorTypes">
+  Category of sensor data from the `SensorTypes` enum.
+</ResponseField>
+
+<ResponseField name="observation_space" type="gym.Space">
+  `gym.Space` object describing the shape and dtype of each observation produced by this sensor.
+</ResponseField>
+
+<ResponseField name="config" type="DictConfig">
+  The sensor config object passed via `kwargs["config"]`. May be `None` if no config is provided.
+</ResponseField>
+
+### Methods to implement
+
+#### `_get_uuid`
+
+```python
+def _get_uuid(self, *args, **kwargs) -> str
+```
+
+Return the unique string identifier for this sensor type (e.g., `"rgb"`, `"depth"`, `"gps"`).
+
+#### `_get_sensor_type`
+
+```python
+def _get_sensor_type(self, *args, **kwargs) -> SensorTypes
+```
+
+Return the `SensorTypes` enum value that best describes this sensor.
+
+#### `_get_observation_space`
+
+```python
+def _get_observation_space(self, *args, **kwargs) -> gym.Space
+```
+
+Return the `gym.Space` for this sensor's observations.
+
+#### `get_observation`
+
+```python
+@abstractmethod
+def get_observation(self, *args, **kwargs) -> Any
+```
+
+Compute and return the current observation from the sensor. Called by `SensorSuite.get_observations()`.
+
+<ResponseField name="return" type="Any">
+  The current observation value, compatible with `observation_space`.
+</ResponseField>
+
+### Built-in sensor base classes
+
+Habitat-Lab provides concrete abstract wrappers for common sensor modalities:
+
+| Class | UUID | SensorType |
+|---|---|---|
+| `RGBSensor` | `"rgb"` | `COLOR` |
+| `DepthSensor` | `"depth"` | `DEPTH` |
+| `SemanticSensor` | `"semantic"` | `SEMANTIC` |
+| `BumpSensor` | `"bump"` | `FORCE` |
+
+Subclass these when implementing a sensor for a specific simulator backend. They pre-fill `_get_uuid` and `_get_sensor_type`; you only need to implement `_get_observation_space` and `get_observation`.
+
+```python
+from habitat.core.simulator import RGBSensor, SensorTypes
+from habitat.core.registry import registry
+import numpy as np
+from gym import spaces
+
+@registry.register_sensor
+class MyRGBSensor(RGBSensor):
+    def _get_observation_space(self, *args, **kwargs):
+        return spaces.Box(
+            low=0, high=255,
+            shape=(self.config.height, self.config.width, 3),
+            dtype=np.uint8,
+        )
+
+    def get_observation(self, *args, **kwargs):
+        # retrieve RGB frame from simulator backend ...
+        pass
+```
+
+---
+
+## Observations
+
+`habitat.core.simulator.Observations` is a plain `dict` subclass (`Dict[str, Any]`) that collects the output of every sensor in a suite into a single mapping.
+
+```python
+# Keys are sensor UUIDs; values are the observation arrays.
+obs = env.reset()
+rgb_frame   = obs["rgb"]    # np.ndarray (H, W, 3)
+depth_frame = obs["depth"]  # np.ndarray (H, W, 1)
+```
+
+It is constructed automatically by `SensorSuite.get_observations()` and returned by `Env.reset()` / `Env.step()`.
+
+---
+
+## SensorSuite
+
+`habitat.SensorSuite` groups a collection of sensors and provides a unified `get_observations()` method. Each sensor is identified by its UUID.
+
+```python
+from habitat.core.simulator import SensorSuite, RGBSensor, DepthSensor
+
+suite = SensorSuite(sensors=[rgb_sensor, depth_sensor])
+
+# Access a specific sensor
+rgb = suite.get("rgb")
+
+# Collect all observations at once
+observations = suite.get_observations(sim_obs=sim_obs, task=task)
+```
+
+### Constructor
+
+```python
+SensorSuite(sensors: Iterable[Sensor])
+```
+
+<ParamField path="body.sensors" type="Iterable[Sensor]" required>
+  An iterable of `Sensor` instances. All UUIDs must be unique; raises `AssertionError` on duplicates.
+</ParamField>
+
+### Attributes
+
+<ResponseField name="sensors" type="Dict[str, Sensor]">
+  `OrderedDict` mapping each sensor's UUID to its `Sensor` object.
+</ResponseField>
+
+<ResponseField name="observation_spaces" type="gym.spaces.Dict">
+  `gym.spaces.Dict` mapping each UUID to the sensor's `observation_space`. Useful for constructing the environment's combined `observation_space`.
+</ResponseField>
+
+### Methods
+
+#### `get`
+
+```python
+def get(uuid: str) -> Sensor
+```
+
+<ParamField path="body.uuid" type="str" required>
+  UUID of the sensor to retrieve. Raises `KeyError` if not present.
+</ParamField>
+
+<ResponseField name="return" type="Sensor">
+  The `Sensor` object for the given UUID.
+</ResponseField>
+
+#### `get_observations`
+
+```python
+def get_observations(*args, **kwargs) -> Observations
+```
+
+Calls `get_observation()` on every sensor in the suite and bundles the results into an `Observations` dict.
+
+<ResponseField name="return" type="Observations">
+  Dict mapping each sensor UUID to its current observation.
+</ResponseField>
+
+---
+
+## Simulator
+
+`habitat.Simulator` is the abstract base class that every simulation backend must implement. New simulators are registered with `@registry.register_simulator`.
+
+<Note>
+  All methods in `Simulator` raise `NotImplementedError` by default. Concrete backends such as `HabitatSim` implement them against a specific physics or rendering engine.
+</Note>
+
+```python
+from habitat.core.simulator import Simulator
+from habitat.core.registry import registry
+
+@registry.register_simulator(name="MySim-v0")
+class MySimulator(Simulator):
+    def reset(self):
+        ...
+
+    def step(self, action, *args, **kwargs):
+        ...
+```
+
+### Attributes
+
+<ResponseField name="habitat_config" type="SimulatorConfig">
+  The `SimulatorConfig` DictConfig passed to the simulator during construction.
+</ResponseField>
+
+### Properties
+
+<ResponseField name="sensor_suite" type="SensorSuite">
+  The collection of sensors attached to this simulator. Must be implemented by the subclass.
+</ResponseField>
+
+<ResponseField name="action_space" type="gym.Space">
+  The action space exposed by this simulator.
+</ResponseField>
+
+<ResponseField name="up_vector" type="np.ndarray">
+  Unit vector pointing upward (perpendicular to the ground plane) in world coordinates.
+</ResponseField>
+
+<ResponseField name="forward_vector" type="np.ndarray">
+  Unit vector pointing forward in world coordinates for an agent with 0° rotation.
+</ResponseField>
+
+### Methods
+
+#### `reset`
+
+```python
+def reset() -> Observations
+```
+
+Resets the simulator to an initial state.
+
+<ResponseField name="return" type="Observations">
+  Initial observations from all sensors.
+</ResponseField>
+
+#### `step`
+
+```python
+def step(action, *args, **kwargs) -> Observations
+```
+
+Applies an action and advances the simulation by one step.
+
+<ParamField path="body.action" type="Any" required>
+  The action to perform (format depends on the concrete backend's action space).
+</ParamField>
+
+<ResponseField name="return" type="Observations">
+  Observations after the action is applied.
+</ResponseField>
+
+#### `seed`
+
+```python
+def seed(seed: int) -> None
+```
+
+<ParamField path="body.seed" type="int" required>
+  Integer seed for reproducible simulation.
+</ParamField>
+
+#### `reconfigure`
+
+```python
+def reconfigure(config: DictConfig, episode: Optional[Episode] = None) -> None
+```
+
+Reconfigures the simulator (e.g., loads a new scene) for the given episode.
+
+<ParamField path="body.config" type="DictConfig" required>
+  Updated simulator config.
+</ParamField>
+
+<ParamField path="body.episode" type="Optional[Episode]" default="None">
+  The episode being loaded. Used to set the scene and agent start state.
+</ParamField>
+
+#### `get_agent_state`
+
+```python
+def get_agent_state(agent_id: int = 0) -> AgentState
+```
+
+Returns the current rigid-body state of the specified agent.
+
+<ParamField path="body.agent_id" type="int" default="0">
+  Index of the agent (relevant in multi-agent setups).
+</ParamField>
+
+<ResponseField name="return" type="AgentState">
+  `AgentState` with `position` (`List[float]` or `np.ndarray`) and `rotation` (quaternion).
+</ResponseField>
+
+#### `get_observations_at`
+
+```python
+def get_observations_at(
+    position: List[float],
+    rotation: List[float],
+    keep_agent_at_new_pose: bool = False,
+) -> Optional[Observations]
+```
+
+Returns sensor observations from an arbitrary pose without necessarily moving the agent permanently.
+
+<ParamField path="body.position" type="List[float]" required>
+  Target 3D position `[x, y, z]`.
+</ParamField>
+
+<ParamField path="body.rotation" type="List[float]" required>
+  Target orientation as a unit quaternion `[x, y, z, w]`.
+</ParamField>
+
+<ParamField path="body.keep_agent_at_new_pose" type="bool" default="false">
+  If `True`, the agent remains at the requested pose. If `False`, it returns to its original pose after observations are collected.
+</ParamField>
+
+<ResponseField name="return" type="Optional[Observations]">
+  Sensor observations at the given pose, or `None` if observations could not be obtained.
+</ResponseField>
+
+#### `geodesic_distance`
+
+```python
+def geodesic_distance(
+    position_a: Union[Sequence[float], np.ndarray],
+    position_b: Union[Sequence[float], Sequence[Sequence[float]], np.ndarray],
+    episode: Optional[Episode] = None,
+) -> float
+```
+
+Computes the geodesic (navmesh-constrained shortest path) distance between two points.
+
+<ParamField path="body.position_a" type="Union[Sequence[float], np.ndarray]" required>
+  Start position `[x, y, z]`.
+</ParamField>
+
+<ParamField path="body.position_b" type="Union[Sequence[float], Sequence[Sequence[float]], np.ndarray]" required>
+  Goal position `[x, y, z]`, or a list of goal positions (returns distance to the nearest).
+</ParamField>
+
+<ParamField path="body.episode" type="Optional[Episode]" default="None">
+  Current episode, used to cache shortest-path computations.
+</ParamField>
+
+<ResponseField name="return" type="float">
+  Geodesic distance in metres, or `math.inf` if no path exists.
+</ResponseField>
+
+#### `sample_navigable_point`
+
+```python
+def sample_navigable_point() -> List[float]
+```
+
+<ResponseField name="return" type="List[float]">
+  A random `[x, y, z]` point on the navmesh where an agent can be initialised.
+</ResponseField>
+
+#### `is_navigable`
+
+```python
+def is_navigable(point: List[float]) -> bool
+```
+
+<ParamField path="body.point" type="List[float]" required>
+  3D point to test.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  `True` if an agent can stand at the point.
+</ResponseField>
+
+#### `action_space_shortest_path`
+
+```python
+def action_space_shortest_path(
+    source: AgentState,
+    targets: List[AgentState],
+    agent_id: int = 0,
+) -> List[ShortestPathPoint]
+```
+
+Computes the shortest discrete-action path from `source` to the nearest target state.
+
+<ParamField path="body.source" type="AgentState" required>
+  Starting agent state.
+</ParamField>
+
+<ParamField path="body.targets" type="List[AgentState]" required>
+  One or more goal agent states.
+</ParamField>
+
+<ParamField path="body.agent_id" type="int" default="0">
+  Index of the agent.
+</ParamField>
+
+<ResponseField name="return" type="List[ShortestPathPoint]">
+  Ordered list of `ShortestPathPoint` objects from source to the nearest target, each containing `position`, `rotation`, and the `action` that leads to that point.
+</ResponseField>
+
+#### `get_straight_shortest_path_points`
+
+```python
+def get_straight_shortest_path_points(
+    position_a: List[float],
+    position_b: List[float],
+) -> List[List[float]]
+```
+
+Returns waypoints along the geodesic path between two positions, irrespective of agent orientation.
+
+<ParamField path="body.position_a" type="List[float]" required>
+  Start position (first point in the returned list).
+</ParamField>
+
+<ParamField path="body.position_b" type="List[float]" required>
+  End position (last point in the returned list).
+</ParamField>
+
+<ResponseField name="return" type="List[List[float]]">
+  Ordered list of `[x, y, z]` waypoints along the geodesic path.
+</ResponseField>
+
+#### `previous_step_collided`
+
+```python
+def previous_step_collided() -> bool
+```
+
+<ResponseField name="return" type="bool">
+  `True` if the most recent `step()` call resulted in a collision.
+</ResponseField>
+
+#### `render`
+
+```python
+def render(mode: str = "rgb") -> Any
+```
+
+Renders the current simulator state. The return type depends on `mode` and the backend.
+
+#### `close`
+
+```python
+def close(destroy: bool = True) -> None
+```
+
+Cleans up simulator resources. `Simulator` supports the context manager protocol — use `with` to ensure `close()` is always called.
+
+---
+
+## AgentState
+
+`habitat.core.simulator.AgentState` is an `attrs` dataclass that represents the rigid transformation of an agent.
+
+```python
+from habitat.core.simulator import AgentState
+import numpy as np
+
+state = AgentState(position=[1.0, 0.0, 2.0], rotation=np.quaternion(1, 0, 0, 0))
+```
+
+<ResponseField name="position" type="Union[None, List[float], np.ndarray]">
+  3D position `[x, y, z]` of the agent's base, typically on the navmesh.
+</ResponseField>
+
+<ResponseField name="rotation" type="Union[None, np.ndarray, quaternion.quaternion]" default="None">
+  Quaternion orientation of the agent's base, typically a yaw rotation.
+</ResponseField>
+
+---
+
+## ShortestPathPoint
+
+`habitat.core.simulator.ShortestPathPoint` is an `attrs` dataclass used in discrete shortest-path planning.
+
+<ResponseField name="position" type="List[Any]">
+  3D world position of this path point.
+</ResponseField>
+
+<ResponseField name="rotation" type="List[Any]">
+  Agent orientation at this path point.
+</ResponseField>
+
+<ResponseField name="action" type="Union[int, np.ndarray, None]" default="None">
+  The action taken to reach this point from the previous one.
+</ResponseField>

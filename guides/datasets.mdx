@@ -1,0 +1,183 @@
+---
+title: 'Datasets'
+description: 'Download and configure scene datasets and task episode datasets for Habitat-Lab.'
+---
+
+Habitat-Lab expects a `data/` directory in your working directory (or a symlink pointing to one). All scene assets and episode JSON files are placed under this directory according to a fixed layout.
+
+## Scene datasets
+
+Scene datasets provide the 3D environments that the agent navigates. Download instructions for each dataset are maintained in the [habitat-sim DATASETS.md](https://github.com/facebookresearch/habitat-sim/blob/main/DATASETS.md).
+
+| Dataset | Extract path | Size |
+|---|---|---|
+| Habitat test scenes | `data/scene_datasets/habitat-test-scenes/{scene}.glb` | 89 MB |
+| ReplicaCAD | `data/scene_datasets/replica_cad/configs/scenes/{scene}.scene_instance.json` | 123 MB |
+| HM3D | `data/scene_datasets/hm3d/{split}/00\d\d\d-{scene}/{scene}.basis.glb` | 130 GB |
+| Gibson | `data/scene_datasets/gibson/{scene}.glb` | 1.5 GB |
+| MatterPort3D (MP3D) | `data/scene_datasets/mp3d/{scene}/{scene}.glb` | 15 GB |
+| HSSD-Habitat | `data/scene_datasets/hssd-hab/scenes/{scene}.scene_instance.json` | — |
+| AI2-THOR-Habitat | `data/scene_datasets/ai2thor-hab/ai2thor-hab/configs/scenes/{DATASET}/{scene}.scene_instance.json` | — |
+
+Download the test scenes to verify your installation:
+
+```bash
+python -m habitat_sim.utils.datasets_download \
+    --uids habitat_test_scenes \
+    --data-path data/
+```
+
+## Task datasets
+
+Task datasets provide the episode files (start positions, goal specifications, etc.) for each benchmark task.
+
+### Point goal navigation
+
+| Scenes | Download | Extract path | Size |
+|---|---|---|---|
+| Gibson | [pointnav_gibson_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/gibson/v1/pointnav_gibson_v1.zip) | `data/datasets/pointnav/gibson/v1/` | 385 MB |
+| Gibson 0+ (train) | [pointnav_gibson_0_plus_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/gibson/v1/pointnav_gibson_0_plus_v1.zip) | `data/datasets/pointnav/gibson/v1/` | 321 MB |
+| Gibson (Sim2LoCoBot) | [pointnav_gibson_v2.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/gibson/v2/pointnav_gibson_v2.zip) | `data/datasets/pointnav/gibson/v2/` | 274 MB |
+| MatterPort3D | [pointnav_mp3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/mp3d/v1/pointnav_mp3d_v1.zip) | `data/datasets/pointnav/mp3d/v1/` | 400 MB |
+| HM3D | [pointnav_hm3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/hm3d/v1/pointnav_hm3d_v1.zip) | `data/datasets/pointnav/hm3d/v1/` | 992 MB |
+
+### Object goal navigation
+
+| Scenes | Download | Extract path | Size |
+|---|---|---|---|
+| MatterPort3D | [objectnav_mp3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/m3d/v1/objectnav_mp3d_v1.zip) | `data/datasets/objectnav/mp3d/v1/` | 170 MB |
+| HM3DSem-v0.1 | [objectnav_hm3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v1/objectnav_hm3d_v1.zip) | `data/datasets/objectnav/hm3d/v1/` | 154 MB |
+| HM3DSem-v0.2 | [objectnav_hm3d_v2.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v2/objectnav_hm3d_v2.zip) | `data/datasets/objectnav/hm3d/v2/` | 245 MB |
+| HSSD | [objectnav_hssd_v0.2.3.zip](https://www.dropbox.com/s/26ribfiup5249b8/objectnav_hssd_v0.2.3.zip) | `data/datasets/objectnav/hssd-hab` | 206 MB |
+| ProcTHOR-hab | [objectnav_procthor-hab.zip](https://www.dropbox.com/s/mdfpevn1srr37cr/objectnav_procthor-hab.zip) | `data/datasets/objectnav/procthor-hab` | 755 MB |
+
+### Instance image goal navigation
+
+| Scenes | Download | Extract path | Size |
+|---|---|---|---|
+| HM3DSem-v0.1 | [instance_imagenav_hm3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/imagenav/hm3d/v1/instance_imagenav_hm3d_v1.zip) | `data/datasets/instance_imagenav/hm3d/v1/` | 303 MB |
+| HM3DSem-v0.2 (v2) | [instance_imagenav_hm3d_v2.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/imagenav/hm3d/v2/instance_imagenav_hm3d_v2.zip) | `data/datasets/instance_imagenav/hm3d/v2/` | 518 MB |
+| HM3DSem-v0.2 (v3) | [instance_imagenav_hm3d_v3.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/imagenav/hm3d/v3/instance_imagenav_hm3d_v3.zip) | `data/datasets/instance_imagenav/hm3d/v3/` | 517 MB |
+
+### Image goal navigation
+
+| Scenes | Download | Extract path | Size |
+|---|---|---|---|
+| Gibson | [pointnav_gibson_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/gibson/v1/pointnav_gibson_v1.zip) | `data/datasets/pointnav/gibson/v1/` | 385 MB |
+| MatterPort3D | [pointnav_mp3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/pointnav/mp3d/v1/pointnav_mp3d_v1.zip) | `data/datasets/pointnav/mp3d/v1/` | 400 MB |
+
+### Other tasks
+
+| Task | Scenes | Download | Extract path | Size |
+|---|---|---|---|---|
+| Rearrange Pick | ReplicaCAD | [rearrange_pick_replica_cad_v0.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/rearrange_pick/replica_cad/v0/rearrange_pick_replica_cad_v0.zip) | `data/datasets/rearrange_pick/replica_cad/v0/` | 11 MB |
+| Embodied Question Answering | MatterPort3D | [eqa_mp3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/eqa/mp3d/v1/eqa_mp3d_v1.zip) | `data/datasets/eqa/mp3d/v1/` | 44 MB |
+| Visual Language Navigation | MatterPort3D | [vln_r2r_mp3d_v1.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/vln/mp3d/r2r/v1/vln_r2r_mp3d_v1.zip) | `data/datasets/vln/mp3d/r2r/v1` | 2.7 MB |
+
+## Data directory layout
+
+After extracting all required datasets, your `data/` directory should follow this structure:
+
+```
+data/
+├── scene_datasets/
+│   ├── habitat-test-scenes/
+│   │   └── {scene}.glb
+│   ├── gibson/
+│   │   └── {scene}.glb
+│   ├── mp3d/
+│   │   └── {scene}/{scene}.glb
+│   ├── hm3d/
+│   │   └── {split}/00\d\d\d-{scene}/{scene}.basis.glb
+│   ├── replica_cad/
+│   │   └── configs/scenes/{scene}.scene_instance.json
+│   └── hssd-hab/
+│       └── scenes/{scene}.scene_instance.json
+└── datasets/
+    ├── pointnav/
+    │   ├── gibson/v1/{split}/{split}.json.gz
+    │   └── hm3d/v1/{split}/{split}.json.gz
+    ├── objectnav/
+    │   └── hm3d/v1/{split}/{split}.json.gz
+    ├── instance_imagenav/
+    │   └── hm3d/v3/{split}/{split}.json.gz
+    ├── eqa/mp3d/v1/
+    ├── vln/mp3d/r2r/v1/
+    └── rearrange_pick/replica_cad/v0/
+```
+
+<Tip>
+You can place the `data/` directory anywhere and symlink it into the habitat-lab working directory:
+
+```bash
+ln -s /path/to/your/data data
+```
+</Tip>
+
+## Dataset config keys
+
+Each task dataset is referenced in a Hydra YAML config under the `habitat.dataset` namespace. The core fields are:
+
+| Key | Description | Example |
+|---|---|---|
+| `type` | Registered dataset class name | `PointNav-v1`, `ObjectNav-v1` |
+| `split` | Which data split to load | `train`, `val`, `test` |
+| `data_path` | Path template for episode JSON | `data/datasets/pointnav/gibson/v1/{split}/{split}.json.gz` |
+| `scene_dir` | Root directory for scene assets | `data/scene_datasets` |
+| `content_scenes` | Scene filter; `["*"]` loads all scenes | `["*"]` |
+
+A minimal dataset config for PointNav on Gibson looks like:
+
+```yaml
+# habitat-lab/habitat/config/habitat/dataset/pointnav/gibson.yaml
+# @package habitat.dataset
+
+type: PointNav-v1
+split: train
+data_path: data/datasets/pointnav/gibson/v1/{split}/{split}.json.gz
+```
+
+And for ObjectNav on HM3D:
+
+```yaml
+# habitat-lab/habitat/config/habitat/dataset/objectnav/hm3d.yaml
+# @package habitat.dataset
+
+type: ObjectNav-v1
+split: train
+data_path: data/datasets/objectnav/hm3d/v1/{split}/{split}.json.gz
+```
+
+Override any of these keys on the command line via Hydra:
+
+```bash
+python examples/example.py \
+    habitat.dataset.split=val \
+    habitat.dataset.data_path=data/datasets/pointnav/hm3d/v1/{split}/{split}.json.gz
+```
+
+## Episode JSON format
+
+Each compressed episode file (`{split}.json.gz`) contains a JSON object with a list of episodes. Each episode specifies the scene, start position and rotation, and task-specific goal information. For example, a PointNav episode:
+
+```json
+{
+  "episodes": [
+    {
+      "episode_id": "0",
+      "scene_id": "data/scene_datasets/gibson/Beechwood.glb",
+      "start_position": [0.0, 0.0, 0.0],
+      "start_rotation": [0, 0, 0, 1],
+      "goals": [
+        {
+          "position": [3.0, 0.0, -2.5],
+          "radius": 0.2
+        }
+      ],
+      "info": {
+        "geodesic_distance": 4.12
+      }
+    }
+  ]
+}
+```

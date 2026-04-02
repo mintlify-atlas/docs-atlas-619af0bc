@@ -1,0 +1,221 @@
+---
+title: "Environment"
+description: "How Habitat-Lab's Env, RLEnv, VectorEnv, and ThreadedVectorEnv classes work together to run embodied AI experiments."
+---
+
+The `Env` class is the central abstraction in Habitat-Lab. It connects three components — a **dataset** of episodes, a **simulator**, and an **embodied task** — into a single interface for running experiments.
+
+```
+Env
+ ├── Dataset      (episodes: start positions, scene IDs, goals)
+ ├── Simulator    (physics, rendering, sensor queries)
+ └── EmbodiedTask (actions, sensors, measurements)
+```
+
+## The `Env` class
+
+`Env` is defined in `habitat/core/env.py`. On construction it:
+
+1. Loads the dataset (or accepts one passed in directly).
+2. Creates the simulator via `make_sim`.
+3. Creates the task via `make_task`.
+4. Merges the simulator's and task's observation spaces into a single `spaces.Dict`.
+
+```python
+import habitat
+
+config = habitat.get_config("benchmark/nav/pointnav/pointnav_habitat_test.yaml")
+
+with habitat.Env(config=config) as env:
+    observations = env.reset()
+    print(env.observation_space)   # merged sim + task sensors
+    print(env.action_space)        # task-defined actions
+
+    action = env.action_space.sample()
+    observations = env.step(action)
+    metrics = env.get_metrics()
+```
+
+### Episode lifecycle
+
+<Steps>
+  <Step title="reset()">
+    Advances the episode iterator to the next episode, reconfigures the simulator for the new scene, resets the task and all measurements, and returns initial observations.
+  </Step>
+  <Step title="step(action)">
+    Executes the action, updates measurements, increments the step counter, and returns new observations. Accepts an action name (`str`), index (`int`), or a dict `{"action": ..., "action_args": {...}}`.
+  </Step>
+  <Step title="Check episode_over">
+    `env.episode_over` becomes `True` when `task.is_episode_active` is `False` or the step/time limit is reached. Always call `reset()` before calling `step()` again.
+  </Step>
+  <Step title="get_metrics()">
+    Returns a `Metrics` dict containing the current value of every registered `Measure` (reward signals, success flags, distance-to-goal, etc.).
+  </Step>
+</Steps>
+
+Key properties available at any time:
+
+| Property | Type | Description |
+|---|---|---|
+| `env.current_episode` | `Episode` | The active episode (scene, start pose, goals). |
+| `env.episode_iterator` | `Iterator[Episode]` | Controls how episodes are sequenced. |
+| `env.episodes` | `List[Episode]` | Full episode list from the dataset. |
+| `env.sim` | `Simulator` | Direct access to the simulator. |
+| `env.task` | `EmbodiedTask` | Direct access to the task. |
+| `env.episode_over` | `bool` | Whether the current episode has ended. |
+| `env.number_of_episodes` | `Optional[int]` | Total episodes in the dataset. |
+
+### Episode limits
+
+Two config keys control when an episode ends automatically:
+
+```yaml
+habitat:
+  environment:
+    max_episode_steps: 500   # end after this many steps (0 = unlimited)
+    max_episode_seconds: 0   # end after this many wall-clock seconds (0 = unlimited)
+```
+
+### Setting a specific episode
+
+You can override the iterator to replay a particular episode:
+
+```python
+env.current_episode = env.episodes[42]
+observations = env.reset()   # must call reset() after changing the episode
+```
+
+### Debugging with `HABITAT_ENV_DEBUG`
+
+Set the environment variable `HABITAT_ENV_DEBUG=1` before running to enable extra assertion checks and verbose logging inside the environment internals. This is useful when diagnosing unexpected resets or action/episode mismatches.
+
+```bash
+HABITAT_ENV_DEBUG=1 python your_script.py
+```
+
+---
+
+## `RLEnv` — reinforcement learning wrapper
+
+`RLEnv` subclasses `gym.Env` and wraps `Env`. It is the entry point for RL training frameworks that expect the standard `(obs, reward, done, info)` interface.
+
+To use it, subclass `RLEnv` and implement four methods:
+
+```python
+import habitat
+from habitat import RLEnv
+
+class MyNavEnv(RLEnv):
+    def get_reward_range(self):
+        return [-1.0, 1.0]
+
+    def get_reward(self, observations):
+        # Use a task measurement as reward
+        return self._env.get_metrics()["distance_to_goal_reward"]
+
+    def get_done(self, observations):
+        return self._env.episode_over
+
+    def get_info(self, observations):
+        return self._env.get_metrics()
+```
+
+`RLEnv.step()` returns `(observations, reward, done, info)`, matching the gym contract. The underlying `Env` is accessible as `self._env` or via the `habitat_env` property.
+
+<Note>
+`RLEnv.reset()` accepts a `return_info=True` keyword argument to return `(observations, info)` in line with newer gym conventions.
+</Note>
+
+---
+
+## Parallelized rollouts
+
+For training at scale, Habitat-Lab provides two vectorized environment classes that run multiple independent `Env` (or `RLEnv`) instances in parallel.
+
+### `VectorEnv`
+
+`VectorEnv` uses **separate processes** (via `multiprocessing`). Each worker process runs one environment and communicates with the main process over a pipe.
+
+```python
+from habitat.core.vector_env import VectorEnv, _make_env_fn
+
+configs = [config] * 4   # 4 parallel envs
+
+envs = VectorEnv(
+    make_env_fn=_make_env_fn,
+    env_fn_args=[(cfg, None, rank) for rank, cfg in enumerate(configs)],
+    auto_reset_done=True,          # automatically reset when an episode ends
+    multiprocessing_start_method="forkserver",  # recommended with CUDA
+)
+
+observations = envs.reset()       # list of 4 obs dicts
+
+actions = [envs.action_spaces[i].sample() for i in range(envs.num_envs)]
+results = envs.step(actions)      # list of 4 (obs, reward, done, info) tuples
+
+envs.close()
+```
+
+Key methods:
+
+| Method | Description |
+|---|---|
+| `reset()` | Reset all environments simultaneously. |
+| `step(data)` | Synchronously step all environments with a list of actions. |
+| `async_step(data)` / `wait_step()` | Asynchronous variants for overlapping compute. |
+| `step_at(index, action)` | Step a single environment by index. |
+| `reset_at(index)` | Reset a single environment by index. |
+| `pause_at(index)` / `resume_all()` | Pause/resume individual envs (useful during evaluation). |
+| `call(function_names, args)` | Call an arbitrary method on each worker environment. |
+| `get_metrics()` | Retrieve task metrics from all environments. |
+| `current_episodes()` | Retrieve the current episode from each environment. |
+| `close()` | Shut down all worker processes. |
+
+The default start method is `"forkserver"`, which is safe with CUDA. Use `"fork"` only when GPU has not been initialized yet. `"spawn"` is portable but slower to start.
+
+### `ThreadedVectorEnv`
+
+`ThreadedVectorEnv` is a drop-in replacement for `VectorEnv` that uses **threads** instead of processes. All workers run in a single process, sharing memory.
+
+```python
+from habitat.core.vector_env import ThreadedVectorEnv
+
+envs = ThreadedVectorEnv(
+    make_env_fn=_make_env_fn,
+    env_fn_args=[(cfg, None, rank) for rank, cfg in enumerate(configs)],
+)
+```
+
+<Warning>
+`ThreadedVectorEnv` is intended for **debugging only**. Because all threads share a process, you can set breakpoints inside environment methods. It offers no performance benefit over a single `Env` and may even be slower due to Python's GIL.
+</Warning>
+
+### Choosing between `VectorEnv` and `ThreadedVectorEnv`
+
+| | `VectorEnv` | `ThreadedVectorEnv` |
+|---|---|---|
+| Worker isolation | Separate processes | Threads in one process |
+| CUDA safety | Yes (forkserver) | Yes |
+| Debuggable with breakpoints | No | Yes |
+| Production performance | Yes | No |
+
+---
+
+## `EpisodeIterator` options
+
+The iterator that drives episode sequencing inside `Env` can be configured via `habitat.environment.iterator_options`:
+
+```yaml
+habitat:
+  environment:
+    iterator_options:
+      cycle: true               # loop back after all episodes are exhausted
+      shuffle: false            # shuffle scene groups on each cycle
+      group_by_scene: true      # keep consecutive episodes in the same scene
+      max_scene_repeat_episodes: -1   # -1 = no limit
+      max_scene_repeat_steps: -1      # -1 = no limit
+      num_episode_sample: -1    # -1 = use all episodes
+      step_repetition_range: 0.2
+```
+
+Grouping episodes by scene reduces simulator overhead from scene-switching while still cycling through diverse episodes.

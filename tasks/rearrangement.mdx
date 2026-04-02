@@ -1,0 +1,334 @@
+---
+title: "Rearrangement Tasks"
+description: "Mobile manipulation skill tasks and composite PDDL tasks for Habitat-Lab's rearrangement benchmark suite."
+---
+
+The rearrangement suite covers mobile manipulation with articulated robot agents (Fetch, Spot, Stretch). Tasks range from atomic skills — pick, place, navigate to object, open/close drawers and fridge — to composite long-horizon tasks expressed as PDDL problems.
+
+All rearrangement tasks use `RearrangeTask` as their base class (`habitat/tasks/rearrange/rearrange_task.py:33`), which extends `NavigationTask` with gripper state, collision tracking, and articulated agent management.
+
+<Note>
+All rearrangement tasks require the **ReplicaCAD** dataset. Download it with:
+```bash
+python -m habitat_sim.utils.datasets_download --uids replica_cad_dataset
+```
+Data path: `data/scene_datasets/replica_cad/`
+</Note>
+
+---
+
+## Individual skill tasks
+
+### Pick (`RearrangePickTask-v0`)
+
+The robot is placed near a randomly selected target object and must grasp it. The agent cannot release the object once it is held (enforced in `step()`).
+
+**Registered class:** `RearrangePickTaskV1` (`habitat/tasks/rearrange/sub_tasks/pick_task.py:22`)
+
+```yaml
+# benchmark/rearrange/skills/pick.yaml (excerpt)
+habitat:
+  task:
+    type: RearrangePickTask-v0
+    reward_measure: pick_reward
+    success_measure: pick_success
+    success_reward: 10.0
+    slack_reward: -0.005
+    end_on_success: True
+    base_angle_noise: 0.523599
+    constraint_violation_ends_episode: False
+    constraint_violation_drops_object: True
+  environment:
+    max_episode_steps: 300
+  dataset:
+    data_path: data/datasets/replica_cad/rearrange/v2/{split}/rearrange_easy.json.gz
+```
+
+**Key measurements:** `pick_reward`, `pick_success`, `did_pick_object`, `end_effector_to_object_distance`
+
+---
+
+### Place (`RearrangePlaceTask-v0`)
+
+The robot starts holding the target object and must place it at the goal position. Regrasping is prevented once the object is released.
+
+**Registered class:** `RearrangePlaceTaskV1` (`habitat/tasks/rearrange/sub_tasks/place_task.py:13`)
+
+```yaml
+# benchmark/rearrange/skills/place.yaml (excerpt)
+habitat:
+  task:
+    type: RearrangePlaceTask-v0
+    reward_measure: place_reward
+    success_measure: place_success
+    success_reward: 10.0
+    slack_reward: -0.005
+    end_on_success: True
+  environment:
+    max_episode_steps: 300
+```
+
+**Key measurements:** `place_reward`, `place_success`, `object_to_goal_distance`, `end_effector_to_goal_distance`
+
+---
+
+### Nav-to-Obj (`NavToObjTask-v0`)
+
+The robot must navigate to the vicinity of a target object (or goal position when holding an object). The episode optionally starts with the object already grasped.
+
+**Registered class:** `DynNavRLEnv` (`habitat/tasks/rearrange/sub_tasks/nav_to_obj_task.py:33`)
+
+The `_object_in_hand_sample_prob` config key controls the probability that the robot starts holding an object and must navigate to the goal location instead of the object.
+
+```yaml
+# benchmark/rearrange/skills/nav_to_obj.yaml (excerpt)
+habitat:
+  task:
+    type: NavToObjTask-v0
+    reward_measure: nav_to_obj_reward
+    success_measure: nav_to_obj_success
+    success_reward: 10.0
+    slack_reward: -0.005
+    end_on_success: True
+  environment:
+    max_episode_steps: 400
+```
+
+**Key measurements:** `rearrange_nav_to_obj_reward`, `rearrange_nav_to_obj_success`, `dist_to_goal`, `nav_to_pos_succ`, `rot_dist_to_goal`
+
+---
+
+### Open/Close Drawer
+
+| Task type | Direction | Start joint state |
+|---|---|---|
+| `RearrangeOpenDrawerTask-v0` | Open drawer | All joints at 0 (closed) |
+| `RearrangeCloseDrawerTask-v0` | Close drawer | Target joint at `[0.4, 0.5]` (open) |
+
+Both tasks use marker `cab_push_point_5` and spawn the robot in the region `x ∈ [0.80, 0.95]`, `z ∈ [-0.35, 0.35]` relative to the cabinet.
+
+**Registered classes:** `RearrangeOpenDrawerTaskV1`, `RearrangeCloseDrawerTaskV1` (`habitat/tasks/rearrange/sub_tasks/articulated_object_task.py:221,253`)
+
+```yaml
+# benchmark/rearrange/skills/open_cab.yaml or close_cab.yaml
+habitat:
+  task:
+    type: RearrangeOpenDrawerTask-v0   # or RearrangeCloseDrawerTask-v0
+```
+
+---
+
+### Open/Close Fridge
+
+| Task type | Direction | Start joint state |
+|---|---|---|
+| `RearrangeOpenFridgeTask-v0` | Open fridge | Both joints at 0 (closed) |
+| `RearrangeCloseFridgeTask-v0` | Close fridge | Door joint at `[π/4, 2π/3]` (open) |
+
+Both tasks use marker `fridge_push_point` and spawn in the region `x ∈ [0.833, 1.25]`, `z ∈ [-0.6, 0.6]`.
+
+**Registered classes:** `RearrangeOpenFridgeTaskV1`, `RearrangeCloseFridgeTaskV1` (`habitat/tasks/rearrange/sub_tasks/articulated_object_task.py:238,275`)
+
+---
+
+### Reach (`ReachState`)
+
+The robot must move the arm end-effector to a specific resting state. Used as a sub-skill component and as a standalone benchmark.
+
+**Config:** `benchmark/rearrange/skills/reach_state.yaml`
+
+---
+
+## Composite PDDL tasks (`RearrangePddlTask-v0`)
+
+Long-horizon tasks are expressed as PDDL problems and executed by an HRL policy. The `PddlTask` sets up a `PddlProblem` from a YAML task spec and binds it to the simulator at episode reset.
+
+**Task type string:** `RearrangePddlTask-v0`  
+**Registered class:** `PddlTask` (`habitat/tasks/rearrange/multi_task/pddl_task.py:16`)
+
+```python
+# From pddl_task.py
+@registry.register_task(name="RearrangePddlTask-v0")
+class PddlTask(RearrangeTask):
+    def __init__(self, *args, config, **kwargs):
+        task_spec_path = osp.join(
+            config.task_spec_base_path,
+            config.task_spec + ".yaml",
+        )
+        self.pddl_problem = PddlProblem(
+            config.pddl_domain_def,
+            task_spec_path,
+            config,
+        )
+        super().__init__(config=config, *args, **kwargs)
+```
+
+### Available composite task specs
+
+| Task spec | Description |
+|---|---|
+| `rearrange_easy` | Single object pick-and-place |
+| `set_table` | Place multiple objects on the table |
+| `prepare_groceries` | Arrange groceries in a fridge |
+| `tidy_house` | Multi-object tidy-up task |
+
+### Base PDDL task config
+
+```yaml
+# benchmark/rearrange/multi_task/pddl_geo_base_task.yaml (excerpt)
+habitat:
+  task:
+    type: RearrangePddlTask-v0
+    reward_measure: move_obj_reward
+    success_measure: pddl_success
+    success_reward: 100.0
+    slack_reward: -0.01
+    end_on_success: True
+    task_spec: rearrange_easy
+    task_spec_base_path: benchmark/multi_task/
+    pddl_domain_def: fp
+    constraint_violation_ends_episode: False
+    constraint_violation_drops_object: True
+  environment:
+    max_episode_steps: 3000
+```
+
+**Key measurements:** `pddl_success`, `move_objects_reward`, `composite_stage_goals`, `object_to_goal_distance`
+
+---
+
+## Action space
+
+All rearrangement actions derive from `ArticulatedAgentAction`. The most commonly used actions are:
+
+### `BaseVelAction`
+
+Controls the mobile base via linear and angular velocity commands. The base is constrained to the NavMesh.
+
+```python
+# action_space: Dict{"base_vel": Box(shape=(2,), low=-20, high=20)}
+# kwargs["base_vel"] = [lin_vel, ang_vel]
+```
+
+```yaml
+habitat:
+  task:
+    actions:
+      base_velocity:
+        type: BaseVelAction
+        lin_speed: 40.0
+        ang_speed: 20.0
+        allow_dyn_slide: True
+        allow_back: True
+```
+
+### `ArmAction`
+
+Combines an arm controller (`ArmRelPosAction`, `ArmAbsPosAction`, `ArmEEAction`, etc.) with an optional grip controller (`MagicGraspAction`, `SuctionGraspAction`, `GazeGraspAction`).
+
+```yaml
+habitat:
+  task:
+    actions:
+      arm_action:
+        type: ArmAction
+        arm_controller: ArmRelPosAction
+        grip_controller: MagicGraspAction
+        arm_joint_dimensionality: 7
+        delta_pos_limit: 0.0125
+        disable_grip: False
+```
+
+### `ArmRelPosAction`
+
+Offsets arm motor targets by delta joint values clipped to `[-delta_pos_limit, delta_pos_limit]`.
+
+### `ArmEEAction`
+
+End-effector position control via inverse kinematics (requires PyBullet). The action is a 3D delta in end-effector space.
+
+### `HumanoidJointAction`
+
+Updates joint rotations and root transformation for humanoid agents. The action encodes flattened quaternions for each joint plus two 4×4 root transformation matrices.
+
+### Grip controllers
+
+| Controller | Description |
+|---|---|
+| `MagicGraspAction` | Instantly snaps the nearest object when grip action > 0 |
+| `SuctionGraspAction` | Suction-cup style grasp for Fetch with suction end-effector |
+| `GazeGraspAction` | Gaze-based grasping |
+
+---
+
+## Reward and success measures
+
+| Measure UUID | Task | Description |
+|---|---|---|
+| `pick_reward` | Pick | Dense reward based on end-effector–to-object distance |
+| `pick_success` | Pick | `1.0` when object is grasped |
+| `place_reward` | Place | Dense reward based on object–to-goal distance |
+| `place_success` | Place | `1.0` when object is within `obj_succ_thresh` of goal |
+| `rearrange_nav_to_obj_reward` | NavToObj | Dense reward based on geodesic distance to goal |
+| `rearrange_nav_to_obj_success` | NavToObj | `1.0` when agent is within threshold of goal |
+| `pddl_success` | PDDL tasks | `1.0` when all PDDL predicates are satisfied |
+| `move_objects_reward` | PDDL tasks | Sparse reward per object moved to goal |
+| `articulated_agent_force` | All | Accumulated contact force on the agent body |
+| `articulated_agent_colls` | All | Number of collisions involving the agent |
+| `force_terminate` | All | Terminates if `max_accum_force` or `max_instant_force` is exceeded |
+| `num_steps` | All | Current step count in the episode |
+
+---
+
+## Training
+
+### Train a single skill (Pick)
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=rearrange/rl_hierarchical.yaml
+```
+
+### Train a hierarchical policy (HRL)
+
+```bash
+# Train high-level policy with pre-learned low-level skills
+python -u -m habitat_baselines.run \
+  --config-name=rearrange/rl_hierarchical.yaml
+
+# Evaluate with oracle low-level skills and fixed task planner
+python -u -m habitat_baselines.run \
+  --config-name=rearrange/rl_hierarchical.yaml \
+  habitat_baselines.evaluate=True \
+  habitat_baselines/rl/policy=hl_fixed \
+  habitat_baselines/rl/policy/hierarchical_policy/defined_skills=oracle_skills
+```
+
+### Change task spec
+
+To train on a different composite task, update the `task_spec` in your config or override it on the command line:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=rearrange/rl_hierarchical.yaml \
+  # Change /habitat/task/rearrange: rearrange_easy to set_table in config defaults
+```
+
+---
+
+## Dataset setup
+
+The rearrangement benchmark uses ReplicaCAD scenes and episode datasets:
+
+| Task | Link | Extract path |
+|---|---|---|
+| Rearrange Pick | [rearrange_pick_replica_cad_v0.zip](https://dl.fbaipublicfiles.com/habitat/data/datasets/rearrange_pick/replica_cad/v0/rearrange_pick_replica_cad_v0.zip) | `data/datasets/rearrange_pick/replica_cad/v0/` |
+
+```bash
+# Download ReplicaCAD scenes
+python -m habitat_sim.utils.datasets_download --uids replica_cad_dataset
+
+# Download rearrangement episodes
+wget https://dl.fbaipublicfiles.com/habitat/data/datasets/rearrange_pick/replica_cad/v0/rearrange_pick_replica_cad_v0.zip
+unzip rearrange_pick_replica_cad_v0.zip -d data/datasets/
+```

@@ -1,0 +1,274 @@
+---
+title: 'Extending Habitat-Lab'
+description: 'Register custom sensors, measures, actions, and tasks outside the habitat-lab source tree using the registry pattern.'
+---
+
+Habitat-Lab uses a central registry (inspired by Redux's global store) to manage all extensible components: tasks, sensors, measures, actions, simulators, datasets, and environments. You can register your own implementations without modifying the habitat-lab source.
+
+## The registry pattern
+
+Import the global registry singleton:
+
+```python
+from habitat.core.registry import registry
+```
+
+The registry provides decorator functions for each component type:
+
+| Decorator | Base class | Purpose |
+|---|---|---|
+| `@registry.register_task` | `EmbodiedTask` | Define a new task |
+| `@registry.register_sensor` | `Sensor` | Add a new observation source |
+| `@registry.register_measure` | `Measure` | Add a new evaluation metric |
+| `@registry.register_task_action` | `Action` | Add a new agent action |
+| `@registry.register_simulator` | `Simulator` | Plug in a custom simulator |
+| `@registry.register_dataset` | `Dataset` | Register a custom dataset reader |
+| `@registry.register_env` | `gym.Env` | Register a custom RL environment |
+
+By default, a component is registered under its class name. Pass `name=` to use a different key:
+
+```python
+@registry.register_sensor(name="my_supercool_sensor")
+class AgentPositionSensor(habitat.Sensor):
+    ...
+```
+
+## Custom sensor
+
+A sensor returns observations at every `reset` and `step`. Subclass `habitat.Sensor` and implement four methods.
+
+The example below (from [`examples/register_new_sensors_and_measures.py`](https://github.com/facebookresearch/habitat-lab/blob/main/examples/register_new_sensors_and_measures.py)) reads the agent's current XYZ position from the simulator:
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+from gym import spaces
+from omegaconf import MISSING
+
+import habitat
+from habitat.config.default_structured_configs import LabSensorConfig
+
+
+@habitat.registry.register_sensor(name="my_supercool_sensor")
+class AgentPositionSensor(habitat.Sensor):
+    def __init__(self, sim, config, **kwargs: Any):
+        super().__init__(config=config)
+        self._sim = sim
+        print("The answer to life is", self.config.answer_to_life)
+
+    # Unique key used in the observation dictionary
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "agent_position"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return habitat.SensorTypes.POSITION
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=(3,),
+            dtype=np.float32,
+        )
+
+    # Called on every reset and step
+    def get_observation(
+        self, observations, *args: Any, episode, **kwargs: Any
+    ):
+        return self._sim.get_agent_state().position
+```
+
+Define a structured config for the sensor so its parameters can be set from YAML or code:
+
+```python
+@dataclass
+class AgentPositionSensorConfig(LabSensorConfig):
+    # The 'type' field must match the registered name
+    type: str = "my_supercool_sensor"
+    # MISSING forces the caller to provide a value
+    answer_to_life: int = MISSING
+```
+
+<Note>
+All fields in structured configs require type annotations. Use `MISSING` from `omegaconf` to mark required fields that have no sensible default.
+</Note>
+
+## Custom measure
+
+A measure computes a scalar or structured metric at every step. Subclass `habitat.Measure` and implement `reset_metric` (called on `env.reset()`) and `update_metric` (called on every `env.step()`).
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+import habitat
+from habitat.config.default_structured_configs import MeasurementConfig
+
+
+@habitat.registry.register_measure
+class EpisodeInfoExample(habitat.Measure):
+    def __init__(self, sim, config, **kwargs: Any):
+        self._config = config
+        super().__init__()
+
+    # Unique key used in the metrics dictionary
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "episode_info"
+
+    # Called on env.reset() — set initial metric value here
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._metric = vars(episode).copy()
+        self._metric["my_value"] = self._config.VALUE
+
+    # Called on every env.step() — update the metric here
+    def update_metric(self, *args: Any, episode, action, **kwargs: Any):
+        self._metric = vars(episode).copy()
+
+
+@dataclass
+class EpisodeInfoExampleConfig(MeasurementConfig):
+    type: str = "EpisodeInfoExample"
+    VALUE: int = -1
+```
+
+## Custom action
+
+Actions are executed when `env.step(action_name)` is called. Subclass `SimulatorTaskAction` for actions that modify simulator state directly.
+
+The example below (from [`examples/new_actions.py`](https://github.com/facebookresearch/habitat-lab/blob/main/examples/new_actions.py)) adds strafe-left and strafe-right actions:
+
+```python
+from dataclasses import dataclass
+
+import magnum as mn
+import numpy as np
+
+import habitat
+from habitat.config.default_structured_configs import ActionConfig
+from habitat.tasks.nav.nav import SimulatorTaskAction
+
+
+@dataclass
+class StrafeActionConfig(ActionConfig):
+    move_amount: float = 0.0
+    noise_amount: float = 0.0
+
+
+@habitat.registry.register_task_action
+class StrafeLeft(SimulatorTaskAction):
+    def __init__(self, *args, config, sim, **kwargs):
+        super().__init__(*args, config=config, sim=sim, **kwargs)
+        self._sim = sim
+        self._move_amount = config.move_amount
+        self._noise_amount = config.noise_amount
+
+    def _get_uuid(self, *args, **kwargs) -> str:
+        return "strafe_left"
+
+    def step(self, *args, **kwargs):
+        agent_state = self._sim.get_agent_state()
+        normalized_quaternion = agent_state.rotation
+        agent_mn_quat = mn.Quaternion(
+            normalized_quaternion.imag, normalized_quaternion.real
+        )
+        forward = agent_mn_quat.transform_vector(-mn.Vector3.z_axis())
+        strafe_angle = mn.Deg(
+            np.random.uniform(
+                (1 - self._noise_amount) * 90,
+                (1 + self._noise_amount) * 90,
+            )
+        )
+        rotation = mn.Quaternion.rotation(strafe_angle, mn.Vector3.y_axis())
+        move_amount = np.random.uniform(
+            (1 - self._noise_amount) * self._move_amount,
+            (1 + self._noise_amount) * self._move_amount,
+        )
+        delta_position = rotation.transform_vector(forward) * move_amount
+        final_position = self._sim.pathfinder.try_step(
+            agent_state.position, agent_state.position + delta_position
+        )
+        self._sim.set_agent_state(
+            final_position,
+            [*rotation.vector, rotation.scalar],
+            reset_sensors=False,
+        )
+```
+
+## Wiring custom components into a config
+
+After defining your classes, add them to the config at runtime before constructing the environment. Both sensors and measures are added by key into the task config:
+
+```python
+import habitat
+
+config = habitat.get_config(
+    config_path="benchmark/nav/pointnav/pointnav_habitat_test.yaml"
+)
+
+with habitat.config.read_write(config):
+    # Register the custom measure with a config value
+    config.habitat.task.measurements[
+        "episode_info_example"
+    ] = EpisodeInfoExampleConfig(VALUE=5)
+
+    # Register the custom sensor with required fields
+    config.habitat.task.lab_sensors[
+        "agent_position_sensor"
+    ] = AgentPositionSensorConfig(answer_to_life=42)
+
+    # Register custom actions
+    config.habitat.task.actions["STRAFE_LEFT"] = StrafeActionConfig(
+        type="StrafeLeft",
+        move_amount=0.25,
+        noise_amount=0.0,
+    )
+    config.habitat.task.actions["STRAFE_RIGHT"] = StrafeActionConfig(
+        type="StrafeRight",
+        move_amount=0.25,
+        noise_amount=0.0,
+    )
+
+with habitat.Env(config=config) as env:
+    obs = env.reset()
+    print(obs["agent_position"])           # from custom sensor
+    print(env.get_metrics()["episode_info"])  # from custom measure
+    env.step("STRAFE_LEFT")
+```
+
+You can also declare actions in YAML configs directly instead of registering them in code. The `type` field must match the registered name (class name by default, or the `name=` argument passed to the decorator).
+
+## Custom task
+
+To define an entirely new task, subclass `EmbodiedTask` and register it:
+
+```python
+from habitat.core.embodied_task import EmbodiedTask
+from habitat.core.registry import registry
+
+
+@registry.register_task(name="MyTask-v0")
+class MyTask(EmbodiedTask):
+    def __init__(self, config, sim, dataset=None):
+        super().__init__(config=config, sim=sim, dataset=dataset)
+
+    def _check_episode_is_active(self, action, episode, **kwargs) -> bool:
+        # Return False to signal the episode has ended
+        return not self.measurements.measures["my_termination"].get_metric()
+
+    def overwrite_sim_config(self, sim_config, episode):
+        # Optionally modify the simulator config per episode
+        return sim_config
+```
+
+Then reference it in your dataset config:
+
+```yaml
+# @package habitat.task
+type: MyTask-v0
+```
+
+<Tip>
+Custom components only need to be imported before `habitat.Env` is constructed. Placing them in a module that is imported at startup (or explicitly imported in your training script) is sufficient — no source-tree modifications are required.
+</Tip>

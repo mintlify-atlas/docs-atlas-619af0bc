@@ -1,0 +1,296 @@
+---
+title: "PPO Trainer"
+description: "PPO and DD-PPO trainer classes for training navigation agents, including the run.py entry point, configuration parameters, and VER trainer."
+---
+
+The `PPOTrainer` class implements the [Proximal Policy Optimization](https://arxiv.org/abs/1707.06347) training loop for single-machine and distributed (DD-PPO) settings. It is registered under both the `"ppo"` and `"ddppo"` trainer names in the baseline registry.
+
+```python
+from habitat_baselines.rl.ppo.ppo_trainer import PPOTrainer
+```
+
+## Entry point
+
+Training and evaluation are launched through `habitat_baselines/run.py`, which uses [Hydra](https://hydra.cc) for configuration management.
+
+<Tabs>
+  <Tab title="Train">
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=pointnav/ppo_pointnav_example \
+      habitat_baselines.evaluate=False
+    ```
+  </Tab>
+  <Tab title="Evaluate">
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=pointnav/ppo_pointnav_example \
+      habitat_baselines.evaluate=True
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+The legacy `--exp-config` / `--run-type` flags are no longer supported. Use `--config-name` and `habitat_baselines.evaluate=True/False` instead.
+</Note>
+
+The `execute_exp` function is the programmatic entry point:
+
+```python
+from habitat_baselines.run import execute_exp
+
+execute_exp(config, run_type="train")  # run_type: "train" or "eval"
+```
+
+<ParamField path="body.config" type="DictConfig" required>
+  Hydra/OmegaConf configuration object.
+</ParamField>
+
+<ParamField path="body.run_type" type="str" required>
+  Either `"train"` or `"eval"`.
+</ParamField>
+
+---
+
+## PPOTrainer
+
+```python
+@baseline_registry.register_trainer(name="ddppo")
+@baseline_registry.register_trainer(name="ppo")
+class PPOTrainer(BaseRLTrainer):
+    supported_tasks = ["Nav-v0"]
+    SHORT_ROLLOUT_THRESHOLD: float = 0.25
+```
+
+`PPOTrainer` supports both single-GPU PPO and multi-GPU DD-PPO (Decentralized Distributed PPO). It detects distributed mode automatically based on the world size.
+
+### Constructor
+
+```python
+PPOTrainer(config=None)
+```
+
+<ParamField path="body.config" type="DictConfig">
+  Full Hydra config object. If `None`, must be set before calling `train()` or `eval()`.
+</ParamField>
+
+### train()
+
+```python
+def train(self) -> None
+```
+
+Main training loop. Performs the following steps on each iteration:
+
+1. Collect `num_steps` rollout steps across all environments.
+2. Compute returns (with optional GAE).
+3. Call `PPO.update()` to perform `ppo_epoch` epochs of mini-batch gradient updates.
+4. Log metrics to TensorBoard.
+5. Save a checkpoint if the checkpoint interval has elapsed.
+
+Supports resuming from a checkpoint if one exists in `checkpoint_folder`.
+
+<ResponseField name="return" type="None" />
+
+### _eval_checkpoint()
+
+```python
+def _eval_checkpoint(
+    checkpoint_path: str,
+    writer: TensorboardWriter,
+    checkpoint_index: int = 0,
+) -> None
+```
+
+Evaluates a single checkpoint file. Loads the checkpoint, rebuilds environments with the eval split, reconstructs the agent, and delegates evaluation to the `Evaluator` configured via `habitat_baselines.evaluator`.
+
+<ParamField path="body.checkpoint_path" type="str" required>
+  Path to the `.pth` checkpoint file.
+</ParamField>
+
+<ParamField path="body.writer" type="TensorboardWriter" required>
+  TensorBoard writer used for logging evaluation metrics.
+</ParamField>
+
+<ParamField path="body.checkpoint_index" type="int" default="0">
+  Index used for logging when evaluating multiple checkpoints sequentially.
+</ParamField>
+
+<Warning>
+Evaluation does not support distributed mode. Calling `_eval_checkpoint` when `_is_distributed=True` raises a `RuntimeError`.
+</Warning>
+
+### save_checkpoint()
+
+```python
+@rank0_only
+def save_checkpoint(file_name: str, extra_state: Optional[Dict] = None) -> None
+```
+
+Saves a checkpoint to `checkpoint_folder/file_name` and also writes it to `checkpoint_folder/latest.pth`. Only runs on rank 0 in distributed mode.
+
+<ParamField path="body.file_name" type="str" required>
+  Filename for the checkpoint, e.g. `"ckpt.0.pth"`.
+</ParamField>
+
+<ParamField path="body.extra_state" type="Dict" default="None">
+  Optional extra metadata to include in the checkpoint dict (e.g. `{"step": num_steps_done}`).
+</ParamField>
+
+### load_checkpoint()
+
+```python
+def load_checkpoint(checkpoint_path: str, *args, **kwargs) -> Dict
+```
+
+Loads a checkpoint using `torch.load` and returns the raw dict.
+
+<ParamField path="body.checkpoint_path" type="str" required>
+  Path to the checkpoint file to load.
+</ParamField>
+
+<ResponseField name="return" type="Dict">
+  Dictionary containing `config`, agent state, and optionally `extra_state`.
+</ResponseField>
+
+---
+
+## Key configuration parameters
+
+All PPO-specific parameters live under `habitat_baselines.rl.ppo` in the Hydra config.
+
+<AccordionGroup>
+  <Accordion title="Rollout collection">
+    <ParamField path="body.num_steps" type="int">
+      Number of environment steps to collect per rollout before performing a policy update. Typical values: 64–128.
+    </ParamField>
+    <ParamField path="body.reward_window_size" type="int">
+      Size of the sliding window used to compute mean episode reward for logging.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="PPO update">
+    <ParamField path="body.ppo_epoch" type="int">
+      Number of passes over the collected rollout data during each update. Typical value: 4.
+    </ParamField>
+    <ParamField path="body.num_mini_batch" type="int">
+      Number of mini-batches to split the rollout data into per epoch. Must be ≤ `num_environments`.
+    </ParamField>
+    <ParamField path="body.clip_param" type="float">
+      PPO clipping parameter ε. The probability ratio is clipped to `[1 - ε, 1 + ε]`. Typical value: 0.2.
+    </ParamField>
+    <ParamField path="body.value_loss_coef" type="float">
+      Coefficient for the value function loss term.
+    </ParamField>
+    <ParamField path="body.entropy_coef" type="float">
+      Entropy bonus coefficient to encourage exploration.
+    </ParamField>
+    <ParamField path="body.max_grad_norm" type="float">
+      Maximum gradient norm for gradient clipping.
+    </ParamField>
+    <ParamField path="body.use_clipped_value_loss" type="boolean">
+      Whether to apply the PPO clipping to the value function loss as well as the policy loss.
+    </ParamField>
+    <ParamField path="body.use_normalized_advantage" type="boolean">
+      Normalize advantages to zero mean and unit variance before computing the policy loss.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Optimizer">
+    <ParamField path="body.lr" type="float">
+      Adam optimizer learning rate. Typical value: `2.5e-4`.
+    </ParamField>
+    <ParamField path="body.eps" type="float">
+      Adam optimizer epsilon for numerical stability. Typical value: `1e-5`.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Returns computation">
+    <ParamField path="body.use_gae" type="boolean">
+      Use Generalized Advantage Estimation (GAE) for return computation.
+    </ParamField>
+    <ParamField path="body.gamma" type="float">
+      Discount factor γ for future rewards. Typical value: 0.99.
+    </ParamField>
+    <ParamField path="body.tau" type="float">
+      GAE λ smoothing parameter. Typical value: 0.95.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Visual encoder (DD-PPO)">
+    <ParamField path="body.train_encoder" type="boolean">
+      When `False`, the visual encoder is frozen and its output is cached before rollout collection, which can significantly speed up training.
+    </ParamField>
+    <ParamField path="body.backbone" type="string">
+      ResNet backbone variant. One of `"resnet18"`, `"resnet50"`, `"resneXt50"`, `"se_resnet50"`, `"se_resneXt50"`, `"se_resneXt101"`, `"resnet50_clip_avgpool"`, `"resnet50_clip_attnpool"`.
+    </ParamField>
+    <ParamField path="body.rnn_type" type="string">
+      Recurrent layer type. One of `"GRU"` or `"LSTM"`.
+    </ParamField>
+    <ParamField path="body.num_recurrent_layers" type="int">
+      Number of recurrent layers in the policy network.
+    </ParamField>
+    <ParamField path="body.hidden_size" type="int">
+      Hidden state size for the recurrent policy. Typical value: 512.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Distributed (DD-PPO)">
+    <ParamField path="body.distrib_backend" type="string">
+      PyTorch distributed backend. Typically `"GLOO"` or `"NCCL"`.
+    </ParamField>
+    <ParamField path="body.sync_frac" type="float">
+      Fraction of workers that must finish a rollout before straggler preemption kicks in. Used in conjunction with `SHORT_ROLLOUT_THRESHOLD`.
+    </ParamField>
+    <ParamField path="body.force_distributed" type="boolean">
+      Force distributed mode even when running on a single process.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Training vs. evaluation mode
+
+The trainer switches between training and evaluation mode at specific points in the training loop:
+
+```python
+# During rollout collection — policy runs in inference mode
+self._agent.eval()
+for step in range(self._ppo_cfg.num_steps):
+    self._collect_rollout_step()
+
+# During the gradient update — policy is set back to training mode
+self._agent.train()
+losses = self._agent.updater.update(self._agent.rollouts)
+```
+
+During `_eval_checkpoint`, the trainer loads a saved checkpoint, rebuilds environments using `habitat_baselines.eval.split`, and runs episodes to completion without any gradient updates.
+
+---
+
+## VER Trainer
+
+The Variable Experience Rollout (VER) trainer is an asynchronous variant of PPO that decouples environment stepping from policy inference to improve GPU utilization.
+
+```python
+from habitat_baselines.rl.ver.ver_trainer import VERTrainer
+```
+
+Register it in config with:
+
+```yaml
+habitat_baselines:
+  trainer_name: ver
+```
+
+`VERTrainer` extends `PPOTrainer` and uses `VERRolloutStorage` instead of the standard `RolloutStorage`. Key differences:
+
+- Environment workers run asynchronously in separate processes.
+- Inference workers handle policy forward passes independently.
+- A `PreemptionDeciderWorker` manages straggler preemption across workers.
+- Uses importance sampling coefficients (`is_coeffs`) to correct for off-policy data.
+
+<Note>
+VER does not support batch rendering (`habitat.simulator.renderer.enable_batch_renderer` must be `False`).
+</Note>

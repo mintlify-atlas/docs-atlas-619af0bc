@@ -1,80 +1,271 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Run your first Habitat-Lab task in minutes using the Gym interface, then learn how to configure and extend it."
 ---
 
-## Get started in three steps
+This guide walks you through running a pre-built embodied AI task, stepping through it with random actions, and modifying the configuration with overrides — all without writing any training code.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  Complete the [Installation](/installation) steps first. You need Habitat-Sim, `habitat-lab`, and the test data downloaded before proceeding.
+</Note>
 
-### Step 1: Set up your local environment
+## Download test data
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+If you haven't already, download the test scenes and episode dataset:
 
-### Step 2: Deploy your changes
+```bash
+# 3D test scenes (no semantic annotations)
+python -m habitat_sim.utils.datasets_download \
+  --uids habitat_test_scenes \
+  --data-path data/
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+# Point-goal navigation episodes for the test scenes
+python -m habitat_sim.utils.datasets_download \
+  --uids habitat_test_pointnav_dataset \
+  --data-path data/
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Run the basic example
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+The bundled `examples/example.py` script loads the **RearrangePick** task through the standard Gym interface and steps through one episode with random actions:
 
-### Step 3: Go live
+```bash
+python examples/example.py
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+Expected output:
+
+```
+Environment creation successful
+Agent acting inside environment.
+Episode finished after 200 steps.
+```
+
+Here is the full source of that script:
+
+```python examples/example.py
+#!/usr/bin/env python3
+
+import gym
+
+import habitat.gym  # noqa: F401
+
+
+def example():
+    with gym.make("HabitatRenderPick-v0") as env:
+        print("Environment creation successful")
+        observations = env.reset()
+
+        print("Agent acting inside environment.")
+        count_steps = 0
+        terminal = False
+        while not terminal:
+            observations, reward, terminal, info = env.step(
+                env.action_space.sample()
+            )
+            count_steps += 1
+        print("Episode finished after {} steps.".format(count_steps))
+
+
+if __name__ == "__main__":
+    example()
+```
+
+The `gym.make("HabitatRenderPick-v0")` call uses the configuration in `habitat-lab/habitat/config/benchmark/rearrange/skills/pick.yaml` to set up the task and the virtual robot. Importing `habitat.gym` registers all the built-in Habitat Gym environments so they are available to `gym.make`.
+
+## Modify configuration with overrides
+
+You can change any configuration value at runtime without editing YAML files. Use `habitat.get_config` with an `overrides` list, then pass the config to `habitat.gym.make_gym_from_config`:
+
+```python
+import habitat
+import habitat.gym
+
+# Load the pick task config and shorten episodes to 20 steps
+config = habitat.get_config(
+    "benchmark/rearrange/skills/pick.yaml",
+    overrides=["habitat.environment.max_episode_steps=20"]
+)
+env = habitat.gym.make_gym_from_config(config)
+
+observations = env.reset()
+terminal = False
+while not terminal:
+    observations, reward, terminal, info = env.step(env.action_space.sample())
+
+env.close()
+```
+
+Overrides follow Hydra's dot-notation: `habitat.environment.max_episode_steps=20` sets the `max_episode_steps` field nested inside `habitat.environment`. You can pass multiple overrides in the list.
+
+<Tip>
+  For a full reference of available configuration keys, see the [CONFIG_KEYS.md](https://github.com/facebookresearch/habitat-lab/blob/main/habitat-lab/habitat/config/CONFIG_KEYS.md) file in the repository. It documents every key under `habitat.dataset`, `habitat.task`, `habitat.simulator`, and the visual agents configuration.
+</Tip>
+
+## Register custom sensors and measures
+
+You can extend Habitat-Lab from outside the source code by decorating your own classes with `@habitat.registry.register_sensor` and `@habitat.registry.register_measure`. The example in `examples/register_new_sensors_and_measures.py` shows the full pattern:
+
+```python examples/register_new_sensors_and_measures.py
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+from gym import spaces
+from omegaconf import MISSING
+
+import habitat
+from habitat.config.default_structured_configs import (
+    LabSensorConfig,
+    MeasurementConfig,
+)
+
+
+# Register a custom measure using the class name as the key
+@habitat.registry.register_measure
+class EpisodeInfoExample(habitat.Measure):
+    def __init__(self, sim, config, **kwargs: Any):
+        self._config = config
+        super().__init__()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "episode_info"
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        self._metric = vars(episode).copy()
+        self._metric["my_value"] = self._config.VALUE
+
+    def update_metric(self, *args: Any, episode, action, **kwargs: Any):
+        self._metric = vars(episode).copy()
+
+
+@dataclass
+class EpisodeInfoExampleConfig(MeasurementConfig):
+    type: str = "EpisodeInfoExample"
+    VALUE: int = -1
+
+
+# Register a custom sensor with an explicit name
+@habitat.registry.register_sensor(name="my_supercool_sensor")
+class AgentPositionSensor(habitat.Sensor):
+    def __init__(self, sim, config, **kwargs: Any):
+        super().__init__(config=config)
+        self._sim = sim
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "agent_position"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return habitat.SensorTypes.POSITION
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=(3,),
+            dtype=np.float32,
+        )
+
+    def get_observation(self, observations, *args: Any, episode, **kwargs: Any):
+        return self._sim.get_agent_state().position
+
+
+@dataclass
+class AgentPositionSensorConfig(LabSensorConfig):
+    type: str = "my_supercool_sensor"
+    answer_to_life: int = MISSING
+
+
+def main():
+    config = habitat.get_config(
+        config_path="benchmark/nav/pointnav/pointnav_habitat_test.yaml"
+    )
+    with habitat.config.read_write(config):
+        config.habitat.task.measurements[
+            "episode_info_example"
+        ] = EpisodeInfoExampleConfig(VALUE=5)
+
+        config.habitat.task.lab_sensors[
+            "agent_position_sensor"
+        ] = AgentPositionSensorConfig(answer_to_life=42)
+
+    with habitat.Env(config=config) as env:
+        print(env.reset()["agent_position"])
+        print(env.get_metrics()["episode_info"])
+```
+
+Run the full registration example with:
+
+```bash
+python examples/register_new_sensors_and_measures.py
+```
+
+## Interactive play
+
+Use your keyboard and mouse to manually control a Fetch robot in a ReplicaCAD environment. First, install the interactive dependencies:
+
+```bash
+pip install pygame==2.0.1 pybullet==3.0.4
+```
+
+Then launch the interactive play script:
+
+```bash
+python examples/interactive_play.py --never-end
+```
+
+**Controls:**
+
+| Keys | Action |
+|---|---|
+| `I` / `K` | Move base forward / backward |
+| `J` / `L` | Move base left / right |
+| `W` / `S` | Move arm end-effector forward / backward |
+| `A` / `D` | Move arm end-effector left / right |
+| `E` / `Q` | Move arm end-effector up / down |
+
+<Warning>
+  Interactive testing is known to fail on Ubuntu 20.04 with an `X Error of failed request: BadAccess` error. The script works without errors on macOS.
+</Warning>
+
+## Use the low-level Env API directly
+
+For more control, use `habitat.Env` instead of the Gym wrapper:
+
+```python
+import habitat
+
+config = habitat.get_config(
+    "benchmark/nav/pointnav/pointnav_habitat_test.yaml"
+)
+
+with habitat.Env(config=config) as env:
+    observations = env.reset()
+    print("Initial observation keys:", list(observations.keys()))
+
+    # Step with a named action
+    observations = env.step("move_forward")
+
+    # Read metrics
+    metrics = env.get_metrics()
+    print("Distance to goal:", metrics.get("distance_to_goal"))
+```
+
+The `habitat.Env` class gives you direct access to `env.get_metrics()`, `env.current_episode`, `env.sim`, and more.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core concepts" icon="book" href="/concepts/environment">
+    Learn how Env, Task, Sensor, and Measure fit together
+  </Card>
+  <Card title="Navigation tasks" icon="compass" href="/tasks/navigation">
+    PointNav, ObjectNav, and ImageNav task configurations
+  </Card>
+  <Card title="Rearrangement tasks" icon="hand" href="/tasks/rearrangement">
+    Pick, place, and composite manipulation tasks
+  </Card>
+  <Card title="Training with PPO" icon="chart-line" href="/training/ppo-baselines">
+    Train navigation and rearrangement agents using habitat-baselines
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

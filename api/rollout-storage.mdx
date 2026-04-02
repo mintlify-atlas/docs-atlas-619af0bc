@@ -1,0 +1,267 @@
+---
+title: "Rollout Storage"
+description: "RolloutStorage class for collecting and storing environment transitions during PPO training, including buffer layout, insertion, and return computation."
+---
+
+`RolloutStorage` holds all transitions collected from the vectorized environment during a single rollout. It stores observations, actions, rewards, masks, and auxiliary data in pre-allocated tensors, then exposes a `data_generator` method that yields shuffled mini-batches for PPO updates.
+
+```python
+from habitat_baselines.common.rollout_storage import RolloutStorage
+```
+
+It is registered in the baseline registry as `"RolloutStorage"`.
+
+---
+
+## Constructor
+
+```python
+RolloutStorage(
+    numsteps: int,
+    num_envs: int,
+    observation_space: spaces.Dict,
+    action_space,
+    actor_critic,
+    is_double_buffered: bool = False,
+)
+```
+
+Allocates all tensors on CPU at construction time. Call `.to(device)` to move buffers to GPU.
+
+<ParamField path="body.numsteps" type="int" required>
+  Number of environment steps to collect per rollout. Corresponds to `habitat_baselines.rl.ppo.num_steps`. Tensors are allocated with shape `(numsteps + 1, num_envs, ...)`.
+</ParamField>
+
+<ParamField path="body.num_envs" type="int" required>
+  Number of parallel environments.
+</ParamField>
+
+<ParamField path="body.observation_space" type="spaces.Dict" required>
+  Observation space of the environment. One tensor is allocated per sensor key.
+</ParamField>
+
+<ParamField path="body.action_space" type="Space" required>
+  Action space of the environment. Used to determine action tensor shape and dtype (long for discrete actions).
+</ParamField>
+
+<ParamField path="body.actor_critic" type="Policy" required>
+  The actor-critic policy. Used to determine `num_recurrent_layers` and `recurrent_hidden_size` for the hidden state buffer.
+</ParamField>
+
+<ParamField path="body.is_double_buffered" type="boolean" default="false">
+  Enable double-buffering: two independent rollout buffers are maintained so environment stepping and policy inference can overlap. When `True`, `num_envs` must be divisible by 2.
+</ParamField>
+
+---
+
+## Buffer layout
+
+All data is stored in a single `TensorDict` called `buffers`. Tensors have shape `(numsteps + 1, num_envs, ...)` unless noted otherwise.
+
+<ResponseField name="observations" type="TensorDict">
+  One tensor per observation sensor key, shaped `(numsteps + 1, num_envs, *sensor_shape)`.
+</ResponseField>
+
+<ResponseField name="recurrent_hidden_states" type="Tensor">
+  Shape `(numsteps + 1, num_envs, num_recurrent_layers, recurrent_hidden_size)`. Stores the RNN hidden state at every step.
+</ResponseField>
+
+<ResponseField name="rewards" type="Tensor">
+  Shape `(numsteps + 1, num_envs, 1)`. Reward received at each step.
+</ResponseField>
+
+<ResponseField name="value_preds" type="Tensor">
+  Shape `(numsteps + 1, num_envs, 1)`. Value predictions from the critic head.
+</ResponseField>
+
+<ResponseField name="returns" type="Tensor">
+  Shape `(numsteps + 1, num_envs, 1)`. Computed returns (filled by `compute_returns`).
+</ResponseField>
+
+<ResponseField name="action_log_probs" type="Tensor">
+  Shape `(numsteps + 1, num_envs, 1)`. Log probabilities of the sampled actions under the behavior policy.
+</ResponseField>
+
+<ResponseField name="actions" type="Tensor">
+  Shape `(numsteps + 1, num_envs, *action_shape)`. Actions stored for the PPO ratio computation. Dtype is `torch.long` for discrete action spaces.
+</ResponseField>
+
+<ResponseField name="prev_actions" type="Tensor">
+  Shape `(numsteps + 1, num_envs, *action_shape)`. Previous actions, fed back into the policy as input at the next step.
+</ResponseField>
+
+<ResponseField name="masks" type="Tensor">
+  Shape `(numsteps + 1, num_envs, 1)`, dtype `torch.bool`. `False` at episode boundaries (done), `True` otherwise. Used to zero out RNN hidden states at episode boundaries.
+</ResponseField>
+
+---
+
+## Methods
+
+### insert()
+
+```python
+def insert(
+    next_observations=None,
+    next_recurrent_hidden_states=None,
+    actions=None,
+    action_log_probs=None,
+    value_preds=None,
+    rewards=None,
+    next_masks=None,
+    buffer_index: int = 0,
+    **kwargs,
+) -> None
+```
+
+Writes a transition into the buffer at the current rollout step index. Data is split into two groups:
+
+- **Current step** (`current_rollout_step_idxs[buffer_index]`): `actions`, `action_log_probs`, `value_preds`, `rewards`.
+- **Next step** (`current_rollout_step_idxs[buffer_index] + 1`): `next_observations`, `next_recurrent_hidden_states`, `prev_actions` (set to `actions`), `next_masks`.
+
+<ParamField path="body.buffer_index" type="int" default="0">
+  Which buffer to write to. Only relevant when `is_double_buffered=True`.
+</ParamField>
+
+### advance_rollout()
+
+```python
+def advance_rollout(buffer_index: int = 0) -> None
+```
+
+Increments `current_rollout_step_idxs[buffer_index]` by 1, moving the write pointer forward.
+
+### insert_first_observations()
+
+```python
+def insert_first_observations(batch) -> None
+```
+
+Writes the initial observations (from `envs.reset()`) into step index 0. Called once during `_init_train` before the rollout loop begins.
+
+### get_current_step()
+
+```python
+def get_current_step(env_slice, buffer_index) -> TensorDict
+```
+
+Returns a view of the buffers at `current_rollout_step_idxs[buffer_index]` for `env_slice`. Used in the training loop to retrieve the current observations and hidden states for action sampling.
+
+### get_last_step()
+
+```python
+def get_last_step() -> TensorDict
+```
+
+Returns the buffers at the final collected step index. Used to compute the bootstrapped value for return computation.
+
+### compute_returns()
+
+```python
+def compute_returns(
+    next_value: Tensor,
+    use_gae: bool,
+    gamma: float,
+    tau: float,
+) -> None
+```
+
+Computes discounted returns and writes them into `buffers["returns"]` in place.
+
+<ParamField path="body.next_value" type="Tensor" required>
+  Bootstrapped value estimate from the critic for the state following the last collected step.
+</ParamField>
+
+<ParamField path="body.use_gae" type="boolean" required>
+  If `True`, uses Generalized Advantage Estimation (GAE). If `False`, uses standard discounted returns.
+</ParamField>
+
+<ParamField path="body.gamma" type="float" required>
+  Discount factor γ.
+</ParamField>
+
+<ParamField path="body.tau" type="float" required>
+  GAE λ smoothing factor. Only used when `use_gae=True`.
+</ParamField>
+
+**GAE computation** (when `use_gae=True`):
+
+```
+δ_t = r_t + γ * V(s_{t+1}) * mask_{t+1} - V(s_t)
+A_t = δ_t + γ * λ * A_{t+1} * mask_{t+1}
+return_t = A_t + V(s_t)
+```
+
+### data_generator()
+
+```python
+def data_generator(
+    advantages: Optional[Tensor],
+    num_mini_batch: int,
+) -> Iterator[DictTree]
+```
+
+Yields shuffled mini-batches of rollout data for PPO update epochs. Environments are randomly partitioned into `num_mini_batch` groups. Each yielded batch is flattened across the time and environment dimensions and includes `rnn_build_seq_info` for packed RNN sequence processing.
+
+<ParamField path="body.advantages" type="Optional[Tensor]" required>
+  Pre-computed advantage estimates to attach to each mini-batch. Pass `None` to omit.
+</ParamField>
+
+<ParamField path="body.num_mini_batch" type="int" required>
+  Number of mini-batches. Must be ≤ `num_environments`. Warns if `num_environments` is not divisible by `num_mini_batch`.
+</ParamField>
+
+<ResponseField name="return" type="Iterator[DictTree]">
+  Each yielded `DictTree` contains flattened tensors for all buffer keys plus `"advantages"` and `"rnn_build_seq_info"`.
+</ResponseField>
+
+### after_update()
+
+```python
+def after_update() -> None
+```
+
+Resets the rollout buffer after a PPO update. Copies the last collected step to index 0 (so the next rollout continues from the correct hidden state and observations) and resets all step indices to 0.
+
+---
+
+## Usage in the training loop
+
+The following diagram shows how `RolloutStorage` fits into the `PPOTrainer.train()` loop:
+
+```mermaid
+flowchart TD
+    A[envs.reset()] --> B[insert_first_observations]
+    B --> C{rollout loop\nfor num_steps}
+    C --> D[actor_critic.act\ncurrent_step]
+    D --> E[envs.async_step_at]
+    E --> F[envs.wait_step_at\ncollect obs/reward/done]
+    F --> G[insert: obs, rewards,\nmasks, actions, values]
+    G --> H[advance_rollout]
+    H --> C
+    C --> I[get_last_step\nbootstrap value]
+    I --> J[compute_returns]
+    J --> K[data_generator\nnum_mini_batch]
+    K --> L[PPO._update_from_batch\nfor ppo_epoch epochs]
+    L --> M[after_update]
+    M --> B
+```
+
+---
+
+## VERRolloutStorage
+
+`VERRolloutStorage` extends `RolloutStorage` for the asynchronous VER trainer. It supports out-of-order insertion from multiple environment workers and adds:
+
+- `episode_ids` tracking for building per-episode RNN sequences.
+- `is_stale` flags identifying transitions collected under older policy versions.
+- `is_coeffs` importance sampling weights for off-policy correction.
+- `policy_version` to track how stale each stored transition is relative to the current policy.
+
+```python
+from habitat_baselines.rl.ver.ver_rollout_storage import VERRolloutStorage
+```
+
+<Note>
+`VERRolloutStorage` is used automatically when you select `trainer_name: ver`. You do not need to instantiate it directly.
+</Note>

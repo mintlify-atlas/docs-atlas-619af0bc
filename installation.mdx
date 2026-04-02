@@ -1,0 +1,234 @@
+---
+title: "Installation"
+description: "Install Habitat-Lab and its dependencies using conda and pip on Linux or macOS."
+---
+
+## Prerequisites
+
+Before installing Habitat-Lab, make sure your system meets the following requirements:
+
+<CardGroup cols={3}>
+  <Card title="Python 3.9+" icon="python">
+    Habitat-Lab requires Python 3.9 or later. Python 3.9 is the recommended version.
+  </Card>
+  <Card title="CMake 3.14+" icon="wrench">
+    CMake 3.14 or later is required to build Habitat-Sim from source or to compile certain extensions.
+  </Card>
+  <Card title="Conda" icon="box">
+    [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda is required for managing the environment and installing Habitat-Sim.
+  </Card>
+</CardGroup>
+
+<Note>
+  An NVIDIA GPU is recommended for training agents but is not required for environment interaction and testing. For the Human-in-the-Loop (HITL) framework, a display (monitor) is required — headless operation is not currently supported.
+</Note>
+
+## Step-by-step installation
+
+<Steps>
+  <Step title="Create a conda environment">
+    Create a new conda environment with Python 3.9 and CMake 3.14. These versions are known to work well with Habitat-Sim.
+
+    ```bash
+    conda create -n habitat python=3.9 cmake=3.14.0
+    conda activate habitat
+    ```
+  </Step>
+
+  <Step title="Install Habitat-Sim">
+    Habitat-Sim is the underlying 3D simulator. Install it via conda from the `aihabitat` channel.
+
+    <Tabs>
+      <Tab title="With Bullet physics (recommended)">
+        Bullet physics enables articulated robot simulation and is required for most rearrangement and manipulation tasks.
+
+        ```bash
+        conda install habitat-sim withbullet -c conda-forge -c aihabitat
+        ```
+      </Tab>
+      <Tab title="Without Bullet physics">
+        Use this option for navigation-only tasks that do not require robot arm simulation.
+
+        ```bash
+        conda install habitat-sim -c conda-forge -c aihabitat
+        ```
+      </Tab>
+      <Tab title="Nightly build">
+        For the latest features not yet in a stable release, install the nightly build instead.
+
+        ```bash
+        conda install habitat-sim withbullet -c conda-forge -c aihabitat-nightly
+        ```
+      </Tab>
+    </Tabs>
+
+    <Tip>
+      If you need features added after the most recent stable release, use `aihabitat-nightly`. See the [Habitat-Sim installation guide](https://github.com/facebookresearch/habitat-sim#installation) for more details, including build-from-source instructions.
+    </Tip>
+  </Step>
+
+  <Step title="Clone and install habitat-lab">
+    Clone the stable branch of the repository and install the core `habitat-lab` package.
+
+    ```bash
+    git clone --branch stable https://github.com/facebookresearch/habitat-lab.git
+    cd habitat-lab
+    pip install -e habitat-lab
+    ```
+
+    This installs the `habitat` Python package with the following core dependencies:
+
+    | Package | Version | Purpose |
+    |---|---|---|
+    | `gym` | `>=0.22.0,<0.23.1` | OpenAI Gym interface |
+    | `numpy` | `==1.26.4` | Numerical arrays |
+    | `hydra-core` | `>=1.2.0` | Composable configuration |
+    | `omegaconf` | `>=2.2.3` | Structured config nodes |
+    | `opencv-python` | `>=3.3.0` | Image processing |
+    | `numba` | `>=0.44.0` | Accelerated array operations |
+    | `scipy` | `>=1.10.1` | Scientific utilities |
+  </Step>
+
+  <Step title="Install habitat-baselines (optional)">
+    `habitat-baselines` provides RL and IL training algorithms (PPO, DD-PPO, VER, HRL). It is not included in the core install.
+
+    ```bash
+    pip install -e habitat-baselines
+    ```
+
+    <Note>
+      `habitat-baselines` requires a recent version of PyTorch. Install PyTorch for your CUDA version before running this command. See [pytorch.org](https://pytorch.org/) for instructions.
+    </Note>
+  </Step>
+
+  <Step title="Install habitat-hitl (optional)">
+    `habitat-hitl` provides the Human-in-the-Loop framework for building interactive desktop and VR applications. It depends on both `habitat-lab` and `habitat-baselines`.
+
+    ```bash
+    pip install -e habitat-hitl
+    ```
+
+    For interactive desktop use, also install `pygame` and `pybullet`:
+
+    ```bash
+    pip install pygame==2.0.1 pybullet==3.0.4
+    ```
+  </Step>
+</Steps>
+
+## Verify the installation
+
+Download test data and run the bundled example script to confirm everything is working.
+
+<Steps>
+  <Step title="Download test scenes">
+    ```bash
+    python -m habitat_sim.utils.datasets_download \
+      --uids habitat_test_scenes \
+      --data-path data/
+    ```
+  </Step>
+
+  <Step title="Download test episodes">
+    ```bash
+    python -m habitat_sim.utils.datasets_download \
+      --uids habitat_test_pointnav_dataset \
+      --data-path data/
+    ```
+  </Step>
+
+  <Step title="Run the example script">
+    ```bash
+    python examples/example.py
+    ```
+
+    You should see output similar to:
+
+    ```
+    Environment creation successful
+    Agent acting inside environment.
+    Episode finished after 200 steps.
+    ```
+  </Step>
+</Steps>
+
+## Docker setup
+
+Meta provides Docker images for Habitat, updated for the annual [Habitat Challenge](https://github.com/facebookresearch/habitat-challenge). This option requires an NVIDIA GPU and [nvidia-docker](https://github.com/NVIDIA/nvidia-docker).
+
+<Steps>
+  <Step title="Pull the image">
+    ```bash
+    docker pull fairembodied/habitat-challenge:testing_2022_habitat_base_docker
+    ```
+  </Step>
+
+  <Step title="Start an interactive session">
+    ```bash
+    docker run --runtime=nvidia -it fairembodied/habitat-challenge:testing_2022_habitat_base_docker
+    ```
+  </Step>
+
+  <Step title="Activate the conda environment">
+    Inside the container, activate the pre-installed habitat environment:
+
+    ```bash
+    conda init
+    source ~/.bashrc
+    source activate habitat
+    ```
+  </Step>
+
+  <Step title="Run the example">
+    ```bash
+    cd habitat-lab
+    python examples/example.py
+    ```
+
+    Expected output:
+
+    ```
+    Agent acting inside environment.
+    Episode finished after 200 steps.
+    ```
+  </Step>
+</Steps>
+
+## Debugging environment issues
+
+Habitat's vectorized environments (`VectorEnv`) are fast but can silently swallow errors, leading to hanging processes or cryptic multiprocessing failures. When debugging, switch to the slower but more verbose `ThreadedVectorEnv`:
+
+```bash
+export HABITAT_ENV_DEBUG=1
+```
+
+Reset it when you are done:
+
+```bash
+unset HABITAT_ENV_DEBUG
+```
+
+<Warning>
+  Leave `HABITAT_ENV_DEBUG` unset during normal training runs. `VectorEnv` is significantly faster than `ThreadedVectorEnv`.
+</Warning>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Interactive testing fails on Ubuntu 20.04">
+    You may see `X Error of failed request: BadAccess (attempt to access private resource denied)` when running `interactive_play.py` on Ubuntu 20.04. This is a known issue. The script works without errors on macOS. A fix is in progress.
+  </Accordion>
+  <Accordion title="conda install takes a long time or fails">
+    Try adding `--override-channels` to restrict the solver, or use `mamba` as a drop-in replacement for `conda` for faster dependency resolution:
+
+    ```bash
+    conda install mamba -c conda-forge
+    mamba install habitat-sim withbullet -c conda-forge -c aihabitat
+    ```
+  </Accordion>
+  <Accordion title="ImportError or missing modules after install">
+    Make sure you installed into the correct conda environment (`conda activate habitat`) and used `pip install -e` (editable mode) so that local source changes are reflected immediately.
+  </Accordion>
+</AccordionGroup>
+
+For additional help, see the [Troubleshooting guide](https://github.com/facebookresearch/habitat-lab/blob/main/TROUBLESHOOTING.md) or ask on the [Discussions forum](https://github.com/facebookresearch/habitat-lab/discussions).

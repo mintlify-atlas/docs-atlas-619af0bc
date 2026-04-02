@@ -1,0 +1,398 @@
+---
+title: "Dataset & Episodes"
+description: "Dataset and Episode classes for managing collections of embodied task episodes in Habitat-Lab."
+---
+
+Habitat-Lab represents each task scenario as an **episode**. A `Dataset` is a collection of episodes used to drive the `Env` training or evaluation loop. This page documents the `BaseEpisode` and `Episode` dataclasses, the `Dataset` base class, the `EpisodeIterator`, and the `make_dataset` factory function.
+
+## BaseEpisode
+
+`habitat.core.dataset.BaseEpisode` is the minimal episode representation. It is used when only the identifier fields are required (for example, when communicating episode identity across processes without serializing the full episode).
+
+```python
+from habitat.core.dataset import BaseEpisode
+
+ep = BaseEpisode(episode_id="1", scene_id="data/scene_datasets/habitat-test-scenes/skokloster-castle.glb")
+print(ep.episode_id)  # "1"
+print(ep.scene_id)    # "data/scene_datasets/..."
+```
+
+<ResponseField name="episode_id" type="str" required>
+  Unique identifier for this episode within the dataset, typically a numeric string.
+</ResponseField>
+
+<ResponseField name="scene_id" type="str" required>
+  Path or identifier of the scene (3D environment asset) for this episode.
+</ResponseField>
+
+---
+
+## Episode
+
+`habitat.core.dataset.Episode` extends `BaseEpisode` with full spatial initialisation data, scene dataset config, and an optional info dict. It is an `attrs` dataclass.
+
+```python
+from habitat.core.dataset import Episode
+
+ep = Episode(
+    episode_id="42",
+    scene_id="data/scene_datasets/habitat-test-scenes/skokloster-castle.glb",
+    start_position=[0.0, 0.1, 0.0],
+    start_rotation=[0.0, 0.0, 0.0, 1.0],
+    info={"difficulty": "easy"},
+)
+```
+
+<ResponseField name="episode_id" type="str" required>
+  Inherited from `BaseEpisode`. Unique episode identifier.
+</ResponseField>
+
+<ResponseField name="scene_id" type="str" required>
+  Inherited from `BaseEpisode`. Scene path or identifier.
+</ResponseField>
+
+<ResponseField name="scene_dataset_config" type="str" default="default">
+  Path to the `SceneDataset` config file that describes the scene's assets. Defaults to `"default"`.
+</ResponseField>
+
+<ResponseField name="additional_obj_config_paths" type="List[str]" default="[]">
+  Additional directories to search for object config files beyond those declared in the `SceneDataset`.
+</ResponseField>
+
+<ResponseField name="start_position" type="List[float]" required>
+  3D Cartesian start position `[x, y, z]` for the agent in world coordinates.
+</ResponseField>
+
+<ResponseField name="start_rotation" type="List[float]" required>
+  Unit quaternion `[x, y, z, w]` representing the agent's initial orientation. The rotation is relative to the world coordinate axes.
+</ResponseField>
+
+<ResponseField name="info" type="Optional[Dict[str, Any]]" default="None">
+  Arbitrary task-specific metadata (e.g., difficulty label, goal objects, reference path).
+</ResponseField>
+
+<Note>
+  `Episode` uses `attrs` with `auto_attribs=True`. Serialisation via `__getstate__` / `__setstate__` excludes the internal `_shortest_path_cache` field.
+</Note>
+
+---
+
+## Dataset
+
+`habitat.Dataset` is the generic base class for all episode collections. It is parameterised by the episode type `T` (bound to `Episode`).
+
+```python
+from habitat.core.dataset import Dataset, Episode
+
+class MyDataset(Dataset[Episode]):
+    def __init__(self, config):
+        self.episodes: List[Episode] = []
+        # load from config.data_path ...
+```
+
+### Properties
+
+<ResponseField name="episodes" type="List[T]">
+  The list of all episodes in the dataset. Directly mutable.
+</ResponseField>
+
+<ResponseField name="num_episodes" type="int">
+  `len(self.episodes)`. Read-only property.
+</ResponseField>
+
+<ResponseField name="scene_ids" type="List[str]">
+  Sorted list of unique `scene_id` values across all episodes.
+</ResponseField>
+
+### Methods
+
+#### `get_episodes`
+
+```python
+def get_episodes(indexes: List[int]) -> List[T]
+```
+
+Returns the episodes at the given indices.
+
+<ParamField path="body.indexes" type="List[int]" required>
+  Zero-based indices into `self.episodes`.
+</ParamField>
+
+<ResponseField name="return" type="List[T]">
+  Episodes at the requested positions.
+</ResponseField>
+
+#### `get_scene_episodes`
+
+```python
+def get_scene_episodes(scene_id: str) -> List[T]
+```
+
+<ParamField path="body.scene_id" type="str" required>
+  The scene identifier to filter by.
+</ParamField>
+
+<ResponseField name="return" type="List[T]">
+  All episodes whose `scene_id` matches the given value.
+</ResponseField>
+
+#### `filter_episodes`
+
+```python
+def filter_episodes(filter_fn: Callable[[T], bool]) -> "Dataset"
+```
+
+Creates a **shallow copy** of the dataset containing only the episodes for which `filter_fn` returns `True`.
+
+<ParamField path="body.filter_fn" type="Callable[[T], bool]" required>
+  A predicate function that accepts an episode and returns `True` to keep it.
+</ParamField>
+
+<ResponseField name="return" type="Dataset">
+  New dataset with filtered episodes.
+</ResponseField>
+
+```python
+# Keep only episodes in a specific scene
+filtered = dataset.filter_episodes(
+    lambda ep: ep.scene_id == "data/scene_datasets/habitat-test-scenes/apartment_1.glb"
+)
+```
+
+#### `get_splits`
+
+```python
+def get_splits(
+    num_splits: int,
+    episodes_per_split: Optional[int] = None,
+    remove_unused_episodes: bool = False,
+    collate_scene_ids: bool = True,
+    sort_by_episode_id: bool = False,
+    allow_uneven_splits: bool = False,
+) -> List["Dataset"]
+```
+
+Randomly partitions the dataset into `num_splits` subsets. Useful for distributing evaluation across workers.
+
+<ParamField path="body.num_splits" type="int" required>
+  Number of subsets to create.
+</ParamField>
+
+<ParamField path="body.episodes_per_split" type="Optional[int]" default="None">
+  If set, each split contains at most this many episodes. If `None`, episodes are distributed evenly: `len(episodes) // num_splits` per split.
+</ParamField>
+
+<ParamField path="body.remove_unused_episodes" type="bool" default="false">
+  If `True`, the episodes that were not selected are removed from the original dataset to save memory.
+</ParamField>
+
+<ParamField path="body.collate_scene_ids" type="bool" default="true">
+  If `True`, episodes belonging to the same scene appear consecutively, reducing simulator scene-switching overhead.
+</ParamField>
+
+<ParamField path="body.sort_by_episode_id" type="bool" default="false">
+  If `True`, episodes within each split are sorted by `episode_id`.
+</ParamField>
+
+<ParamField path="body.allow_uneven_splits" type="bool" default="false">
+  If `True`, the last splits may have fewer episodes than the others, ensuring every episode is covered.
+</ParamField>
+
+<ResponseField name="return" type="List[Dataset]">
+  A list of `num_splits` dataset objects, each with its own episode subset.
+</ResponseField>
+
+#### `get_episode_iterator`
+
+```python
+def get_episode_iterator(*args, **kwargs) -> Iterator[T]
+```
+
+Returns an `EpisodeIterator` for this dataset. All keyword arguments are forwarded to the `EpisodeIterator` constructor.
+
+<ResponseField name="return" type="Iterator[T]">
+  An `EpisodeIterator` (or custom subclass) over `self.episodes`.
+</ResponseField>
+
+#### `to_json` / `from_json`
+
+```python
+def to_json() -> str
+def from_json(json_str: str, scenes_dir: Optional[str] = None) -> None
+```
+
+Serialize and deserialize the dataset. `from_json` is abstract and must be implemented by concrete subclasses.
+
+#### Static helpers
+
+```python
+@staticmethod
+def scene_from_scene_path(scene_path: str) -> str
+```
+
+Extracts the scene name (without extension) from a full scene path, e.g. `"data/scenes/my_scene.glb"` → `"my_scene"`.
+
+```python
+@classmethod
+def get_scenes_to_load(cls, config: DictConfig) -> List[str]
+```
+
+Instantiates the dataset from `config` and returns the list of unique scene names. Useful for distributing scenes among workers before full dataset construction.
+
+---
+
+## EpisodeIterator
+
+`habitat.core.dataset.EpisodeIterator` provides configurable episode iteration: cycling, shuffling, scene grouping, and repetition limits.
+
+```python
+from habitat.core.dataset import EpisodeIterator
+
+iterator = EpisodeIterator(
+    episodes=dataset.episodes,
+    cycle=True,
+    shuffle=True,
+    group_by_scene=True,
+    max_scene_repeat_episodes=5,
+    seed=42,
+)
+
+for episode in iterator:
+    print(episode.episode_id)
+```
+
+### Constructor
+
+```python
+EpisodeIterator(
+    episodes: Sequence[T],
+    cycle: bool = True,
+    shuffle: bool = False,
+    group_by_scene: bool = True,
+    max_scene_repeat_episodes: int = -1,
+    max_scene_repeat_steps: int = -1,
+    num_episode_sample: int = -1,
+    step_repetition_range: float = 0.2,
+    seed: int = None,
+)
+```
+
+<ParamField path="body.episodes" type="Sequence[T]" required>
+  The list of episodes to iterate over.
+</ParamField>
+
+<ParamField path="body.cycle" type="bool" default="true">
+  If `True`, restart from the beginning when all episodes have been yielded instead of raising `StopIteration`.
+</ParamField>
+
+<ParamField path="body.shuffle" type="bool" default="false">
+  If `True`, shuffle scene groups when cycling back to the start.
+</ParamField>
+
+<ParamField path="body.group_by_scene" type="bool" default="true">
+  If `True`, episodes from the same scene are grouped consecutively to reduce simulator overhead from scene switching.
+</ParamField>
+
+<ParamField path="body.max_scene_repeat_episodes" type="int" default="-1">
+  Maximum number of consecutive episodes from the same scene. `-1` disables the limit.
+</ParamField>
+
+<ParamField path="body.max_scene_repeat_steps" type="int" default="-1">
+  Maximum number of consecutive simulator steps within the same scene. `-1` disables the limit.
+</ParamField>
+
+<ParamField path="body.num_episode_sample" type="int" default="-1">
+  Randomly sub-sample this many episodes from the full list. `-1` uses all episodes.
+</ParamField>
+
+<ParamField path="body.step_repetition_range" type="float" default="0.2">
+  When `max_scene_repeat_steps` is set, the actual limit is sampled uniformly from `[1 - step_repetition_range, 1 + step_repetition_range] * max_scene_repeat_steps`. This prevents all parallel workers from switching scenes simultaneously.
+</ParamField>
+
+<ParamField path="body.seed" type="Optional[int]" default="None">
+  Seed for `random` and `numpy.random` to make shuffling deterministic.
+</ParamField>
+
+### Methods
+
+#### `set_next_episode_by_index`
+
+```python
+def set_next_episode_by_index(episode_index: int) -> None
+```
+
+Force the iterator to yield a specific episode next (by list index).
+
+<ParamField path="body.episode_index" type="int" required>
+  Zero-based index into `self.episodes`. Raises `ValueError` if out of bounds.
+</ParamField>
+
+#### `set_next_episode_by_id`
+
+```python
+def set_next_episode_by_id(episode_id: str) -> None
+```
+
+Force the iterator to yield a specific episode next (by episode ID string).
+
+<ParamField path="body.episode_id" type="str" required>
+  The `episode_id` of the episode to queue next. Raises `ValueError` if not found.
+</ParamField>
+
+#### `step_taken`
+
+```python
+def step_taken() -> None
+```
+
+Increments the internal step counter. Called automatically by `Env._update_step_stats()` after each `step()`.
+
+---
+
+## make_dataset
+
+`habitat.make_dataset` is the factory function for constructing dataset instances from a registered dataset class.
+
+```python
+from habitat.datasets import make_dataset
+
+dataset = make_dataset(
+    id_dataset="PointNav-v1",
+    config=config.habitat.dataset,
+)
+```
+
+### Signature
+
+```python
+def make_dataset(id_dataset: str, **kwargs) -> Dataset
+```
+
+<ParamField path="body.id_dataset" type="str" required>
+  The registration key for the dataset class (e.g., `"PointNav-v1"`, `"ObjectNav-v1"`). Must match the key used in `@registry.register_dataset`.
+</ParamField>
+
+<ParamField path="body.**kwargs" type="Any">
+  Keyword arguments forwarded to the dataset constructor. Typically includes `config` (the dataset config object).
+</ParamField>
+
+<ResponseField name="return" type="Dataset">
+  An instantiated dataset object of the registered class.
+</ResponseField>
+
+<Warning>
+  Raises `AssertionError` if `id_dataset` is not found in the registry. Make sure the dataset module has been imported before calling `make_dataset`.
+</Warning>
+
+### Built-in dataset types
+
+The following dataset types are registered automatically when `habitat.datasets` is imported:
+
+| Key | Description |
+|---|---|
+| `"PointNav-v1"` | Point-goal navigation |
+| `"ObjectNav-v1"` | Object-goal navigation |
+| `"InstanceImageNav-v1"` | Instance image-goal navigation |
+| `"VLN-CE-v1"` | Vision-and-language navigation (R2R) |
+| `"MP3DEQA-v1"` | Embodied question answering (MP3D) |
+| `"RearrangeDataset-v0"` | Rearrangement tasks |

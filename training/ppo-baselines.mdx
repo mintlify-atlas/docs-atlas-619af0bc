@@ -1,0 +1,216 @@
+---
+title: "PPO Training"
+description: "Train navigation and manipulation policies with Proximal Policy Optimization (PPO) and its distributed variant DD-PPO using habitat-baselines."
+---
+
+Habitat-baselines provides a PPO implementation for training embodied agents on navigation and manipulation tasks. The same `run.py` entry point handles both single-GPU PPO and multi-GPU DD-PPO, and can be swapped for the higher-throughput VER trainer with a single flag.
+
+## Overview
+
+**PPO** ([Schulman et al., 2017](https://arxiv.org/abs/1707.06347)) is the default on-policy RL algorithm in habitat-baselines. The implementation is based on [pytorch-a2c-ppo-acktr](https://github.com/ikostrikov/pytorch-a2c-ppo-acktr).
+
+**DD-PPO** (Decentralized Distributed PPO, [Wijmans et al., 2020](https://arxiv.org/abs/1911.00357)) is the multi-GPU variant. It uses NCCL or GLOO as the distributed backend and synchronizes gradients across workers after each rollout. Set `trainer_name: "ddppo"` to use it.
+
+Both trainers are registered under the same `PPOTrainer` class in `habitat_baselines/rl/ppo/ppo_trainer.py` and support navigation tasks (`Nav-v0`).
+
+## Training commands
+
+<Tabs>
+  <Tab title="PPO (single GPU)">
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=pointnav/ppo_pointnav_example.yaml
+    ```
+  </Tab>
+  <Tab title="DD-PPO (multi-GPU)">
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=pointnav/ddppo_pointnav.yaml
+    ```
+  </Tab>
+  <Tab title="VER trainer">
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=pointnav/ppo_pointnav_example.yaml \
+      habitat_baselines.trainer_name=ver
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+Download the sample test scene data from [habitat-test-scenes.zip](http://dl.fbaipublicfiles.com/habitat/habitat-test-scenes.zip) and extract it to `habitat-lab/data/` before running these commands.
+</Note>
+
+## VER: Variable Experience Rollout
+
+VER ([Wijmans et al., NeurIPS 2022](https://arxiv.org/abs/2210.05064)) improves training throughput by mitigating the straggler effect. It separates environment workers, inference workers, and a learner into distinct processes communicating through shared memory.
+
+Set `trainer_name` to `"ver"` to switch from the default PPO trainer:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml \
+  habitat_baselines.trainer_name=ver
+```
+
+### VER tuning options
+
+```bash
+# Disable variable experience rollouts for environments with extreme timing variance
+python ... habitat_baselines.rl.ver.variable_experience=False
+
+# Change the number of inference workers (default: 2)
+python ... habitat_baselines.rl.ver.num_inference_workers=4
+
+# Overlap experience collection and learning (higher throughput, lower sample efficiency)
+python ... habitat_baselines.rl.ver.overlap_rollouts_and_learn=True
+```
+
+The `VERConfig` structured config fields:
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `variable_experience` | `True` | Collect variable amounts of experience per environment to reduce straggler delay. |
+| `num_inference_workers` | `2` | Number of inference worker processes. Increase for large models. |
+| `overlap_rollouts_and_learn` | `False` | Overlap rollout collection and learning updates. |
+
+## Evaluation
+
+To evaluate a trained checkpoint, pass `habitat_baselines.evaluate=True`:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml \
+  habitat_baselines.evaluate=True
+```
+
+By default the evaluator runs against `eval_ckpt_path_dir`. To evaluate a specific checkpoint:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=pointnav/ppo_pointnav_example.yaml \
+  habitat_baselines.evaluate=True \
+  habitat_baselines.eval_ckpt_path_dir=data/checkpoints/ckpt.10.pth
+```
+
+To evaluate on all episodes set `habitat_baselines.test_episode_count=-1` (the default in production configs). The example config sets it to `2` for quick iteration.
+
+## Pre-trained checkpoints
+
+Pre-trained RGB, RGBD, and Depth PPO models for MatterPort3D and Gibson are available at:
+
+```
+https://dl.fbaipublicfiles.com/habitat/data/baselines/v1/habitat_baselines_v2.zip
+```
+
+Unzip and point `eval_ckpt_path_dir` at the extracted path.
+
+## Key configuration fields
+
+The example config `habitat_baselines/config/pointnav/ppo_pointnav_example.yaml`:
+
+```yaml
+# @package _global_
+
+defaults:
+  - /benchmark/nav/pointnav: pointnav_habitat_test
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - _self_
+
+habitat_baselines:
+  trainer_name: "ppo"
+  torch_gpu_id: 0
+  tensorboard_dir: "tb"
+  video_dir: "video_dir"
+  test_episode_count: 2
+  eval_ckpt_path_dir: "data/new_checkpoints"
+  num_environments: 1
+  checkpoint_folder: "data/new_checkpoints"
+  num_updates: -1
+  total_num_steps: 1e6
+  log_interval: 10
+  num_checkpoints: 50
+  force_torch_single_threaded: True
+
+  rl:
+    ppo:
+      clip_param: 0.1
+      ppo_epoch: 1
+      num_mini_batch: 1
+      value_loss_coef: 0.5
+      entropy_coef: 0.01
+      lr: 2.5e-4
+      eps: 1e-5
+      max_grad_norm: 0.5
+      num_steps: 32
+      hidden_size: 512
+      use_gae: True
+      gamma: 0.99
+      tau: 0.95
+      use_linear_clip_decay: True
+      use_linear_lr_decay: True
+      reward_window_size: 50
+```
+
+For large-scale training use `ppo_pointnav.yaml`, which targets 75M steps on the Gibson PointGoal dataset. Switch to MatterPort3D by changing the defaults list entry:
+
+```yaml
+defaults:
+  - /benchmark/nav/pointnav: pointnav_mp3d   # was pointnav_gibson
+```
+
+### Important `habitat_baselines` keys
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `trainer_name` | `"ppo"` | Trainer to use: `"ppo"`, `"ddppo"`, or `"ver"`. |
+| `num_environments` | `16` | Number of parallel environments per worker. |
+| `total_num_steps` | `-1.0` | Total environment steps to train for. Set to `-1` to use `num_updates` instead. |
+| `num_updates` | `10000` | Number of policy update iterations. Used when `total_num_steps` is `-1`. |
+| `num_checkpoints` | `10` | Total checkpoints saved over training. |
+| `checkpoint_folder` | `"data/checkpoints"` | Directory to write checkpoints. |
+| `eval_ckpt_path_dir` | `"data/checkpoints"` | Path to checkpoint or directory of checkpoints for evaluation. |
+| `test_episode_count` | `-1` | Episodes to evaluate. `-1` evaluates all. |
+
+### PPO algorithm keys (`habitat_baselines.rl.ppo`)
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `clip_param` | `0.2` | PPO clipping parameter ε. |
+| `ppo_epoch` | `4` | Update epochs per rollout. |
+| `num_mini_batch` | `2` | Mini-batches per epoch. |
+| `lr` | `2.5e-4` | Learning rate. |
+| `gamma` | `0.99` | Discount factor. |
+| `tau` | `0.95` | GAE parameter. |
+| `hidden_size` | `512` | RNN hidden state size. |
+| `num_steps` | `5` | Rollout steps per environment before an update. |
+
+### DD-PPO keys (`habitat_baselines.rl.ddppo`)
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `sync_frac` | `0.6` | Fraction of workers that must finish a rollout before synchronizing. |
+| `distrib_backend` | `"GLOO"` | PyTorch distributed backend (`"NCCL"` or `"GLOO"`). |
+| `backbone` | `"resnet18"` | Visual encoder backbone architecture. |
+| `pretrained` | `False` | Initialize from `pretrained_weights`. |
+| `train_encoder` | `True` | Whether to fine-tune the visual encoder. |
+
+## Logging and monitoring
+
+By default, habitat-baselines writes TensorBoard summaries to `tensorboard_dir`. Switch to Weights & Biases by setting `writer_type: "wb"` and configuring the `wb` block:
+
+```yaml
+habitat_baselines:
+  writer_type: "wb"
+  wb:
+    project_name: "my-habitat-project"
+    entity: "my-team"
+    run_name: "pointnav-ppo-run1"
+```
+
+Use the `--multirun` flag with Hydra for hyperparameter sweeps, for example across learning rates:
+
+```bash
+python -u -m habitat_baselines.run --config-name=pointnav/ppo_pointnav.yaml \
+  --multirun habitat_baselines.rl.ppo.lr=2.5e-4,2.5e-5,2.5e-6
+```

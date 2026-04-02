@@ -1,0 +1,217 @@
+---
+title: "Hierarchical Reinforcement Learning"
+description: "Train two-layer hierarchical policies for long-horizon mobile manipulation tasks using learned and oracle high-level and low-level components."
+---
+
+Habitat-baselines provides a `HierarchicalPolicy` class that implements a two-layer architecture: a **high-level (HL) policy** selects which **low-level (LL) skill** to execute next, and the active skill runs until its termination condition fires. This design is particularly effective for long-horizon mobile manipulation tasks introduced in [Habitat 2.0](https://arxiv.org/abs/2106.14405).
+
+## Architecture
+
+```
+HierarchicalPolicy
+├── HighLevelPolicy  (selects next skill)
+│   ├── NeuralHighLevelPolicy  (learned)
+│   ├── FixedHighLevelPolicy   (PDDL oracle sequence)
+│   └── PlannerHighLevelPolicy (PDDL planner)
+└── Skills           (execute actions until done)
+    ├── NnSkillPolicy          (neural network, learned)
+    ├── OracleNavPolicy        (A* pathfinding)
+    ├── ArtObjSkillPolicy      (articulated object manipulation)
+    ├── PickSkillPolicy
+    ├── PlaceSkillPolicy
+    ├── ResetArmSkillPolicy
+    └── NoopSkillPolicy        (instantaneous / oracle transition)
+```
+
+The HL policy is invoked whenever the active LL skill signals termination. The LL skill receives observations and produces low-level actions; it is responsible for its own termination condition. The `HierarchicalPolicy.act` method orchestrates the split hidden states, batched skill dispatch, and episode termination logic in `habitat_baselines/rl/hrl/hierarchical_policy.py`.
+
+## Low-level skills
+
+### Learned neural skills
+
+Neural skills (`NnSkillPolicy`) wrap a pre-trained `Policy` checkpoint and filter the observation and action spaces to only the dimensions the skill needs. Load them via `load_ckpt_file` in the skill config:
+
+```yaml
+habitat_baselines:
+  rl:
+    policy:
+      main_agent:
+        hierarchical_policy:
+          defined_skills:
+            nav_to_obj:
+              skill_name: "NnSkillPolicy"
+              name: "PointNavResNetPolicy"
+              load_ckpt_file: "data/checkpoints/nav_skill.pth"
+              max_skill_steps: 200
+              force_end_on_timeout: True
+```
+
+### Oracle navigation skill
+
+`OracleNavPolicy` uses the `oracle_nav_action` provided by the simulator to move the robot to a PDDL entity using A\* pathfinding over the scene map. It reads `HasFinishedOracleNavSensor` to detect completion:
+
+```yaml
+defined_skills:
+  nav_to_obj:
+    skill_name: "OracleNavPolicy"
+    action_name: "oracle_nav_action"
+    stop_thresh: 0.001
+    max_skill_steps: 1500
+```
+
+### Instantaneous (noop) skills
+
+`NoopSkillPolicy` applies PDDL post-conditions instantly and transitions the environment to the desired state in a single step. This is the "oracle skill" option that bypasses any physical execution:
+
+```yaml
+defined_skills:
+  pick:
+    skill_name: "NoopSkillPolicy"
+    apply_postconds: True
+```
+
+## High-level policies
+
+### Learned HL policy (`NeuralHighLevelPolicy`)
+
+Trained end-to-end using PPO. Used when you want to train the task selector alongside the pre-trained low-level skills (the SRL baseline from Habitat 2.0):
+
+```yaml
+habitat_baselines/rl/policy@habitat_baselines.rl.policy.main_agent: hl_neural
+```
+
+### Fixed PDDL oracle (`FixedHighLevelPolicy`)
+
+Executes the solution plan read directly from the PDDL problem file. Each call to `get_next_skill` advances a pointer into the solution sequence. This is used for evaluation without any learned HL component:
+
+```yaml
+habitat_baselines/rl/policy@habitat_baselines.rl.policy.main_agent: hl_fixed
+```
+
+The `FixedHighLevelPolicy` is implemented in `habitat_baselines/rl/hrl/hl/fixed_policy.py`.
+
+## Training commands
+
+### Train a high-level policy with pre-learned LL skills (SRL baseline)
+
+The SRL (Skill-based RL) baseline from Habitat 2.0 keeps the low-level skills frozen and trains only the high-level policy with PPO:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=rearrange/rl_hierarchical.yaml
+```
+
+This uses `rl_hierarchical.yaml`, which wires together:
+- `hl_fixed` as the default high-level policy
+- `nn_skills` as the set of pre-trained low-level neural skills
+- `ddppo` trainer with `HRLPPO` and `HRLDDPPO` updaters
+- `HrlRolloutStorage` for the split hidden states
+
+The default config trains for 50M steps with 4 parallel environments.
+
+### Change the rearrangement task
+
+Override the task in the defaults list to train on different sub-tasks:
+
+<Tabs>
+  <Tab title="rearrange_easy (default)">
+    ```yaml
+    defaults:
+      - /benchmark/rearrange/multi_task: rearrange_easy
+    ```
+  </Tab>
+  <Tab title="set_table">
+    Change the line in `rl_hierarchical.yaml`:
+    ```yaml
+    defaults:
+      - /benchmark/rearrange/multi_task: set_table
+    ```
+    Or via command line:
+    ```bash
+    python -u -m habitat_baselines.run \
+      --config-name=rearrange/rl_hierarchical.yaml \
+      /benchmark/rearrange/multi_task=set_table
+    ```
+  </Tab>
+</Tabs>
+
+## Evaluation with oracle skills
+
+To evaluate with oracle low-level skills (instantaneous transitions) and a fixed PDDL task planner—bypassing any learned components entirely:
+
+```bash
+python -u -m habitat_baselines.run \
+  --config-name=rearrange/rl_hierarchical.yaml \
+  habitat_baselines.evaluate=True \
+  habitat_baselines/rl/policy=hl_fixed \
+  habitat_baselines/rl/policy/hierarchical_policy/defined_skills=oracle_skills
+```
+
+This substitutes:
+- `hl_fixed`: fixed high-level policy executing the PDDL solution sequence
+- `oracle_skills`: noop skills that apply PDDL post-conditions instantly
+
+## The `rl_hierarchical.yaml` config
+
+```yaml
+# @package _global_
+
+defaults:
+  - /benchmark/rearrange/multi_task: rearrange_easy
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - /habitat_baselines/rl/policy@habitat_baselines.rl.policy.main_agent: hl_fixed
+  - /habitat_baselines/rl/policy/hierarchical_policy/defined_skills
+      @habitat_baselines.rl.policy.main_agent.hierarchical_policy.defined_skills: nn_skills
+  - _self_
+
+habitat_baselines:
+  trainer_name: "ddppo"
+  updater_name: "HRLPPO"
+  distrib_updater_name: "HRLDDPPO"
+  num_environments: 4
+  total_num_steps: 5.0e7
+  rollout_storage_name: "HrlRolloutStorage"
+  load_resume_state_config: False
+
+  rl:
+    ppo:
+      clip_param: 0.2
+      ppo_epoch: 1
+      num_mini_batch: 2
+      lr: 2.5e-4
+      num_steps: 128
+      use_gae: True
+      gamma: 0.99
+      tau: 0.95
+    ddppo:
+      backbone: resnet18
+      rnn_type: LSTM
+      num_recurrent_layers: 2
+```
+
+## Skill configuration reference
+
+Each entry under `defined_skills` maps to an `HrlDefinedSkillConfig`:
+
+| Field | Description |
+| --- | --- |
+| `skill_name` | Class name of the skill (e.g. `"NnSkillPolicy"`, `"OracleNavPolicy"`, `"NoopSkillPolicy"`). |
+| `name` | Policy architecture class for neural skills (e.g. `"PointNavResNetPolicy"`). |
+| `load_ckpt_file` | Path to a pre-trained checkpoint. Leave empty for oracle skills. |
+| `max_skill_steps` | Maximum steps before the skill is forcibly terminated. |
+| `force_end_on_timeout` | Call the stop action when `max_skill_steps` is reached. |
+| `apply_postconds` | Apply PDDL post-conditions when the skill terminates (used by noop skills). |
+| `pddl_action_names` | List of PDDL action names that map to this skill. Defaults to the skill key name. |
+| `action_name` | Action name for oracle navigation (e.g. `"base_velocity"`, `"oracle_nav_action"`). |
+
+## Required datasets
+
+The rearrangement hierarchical examples require the [ReplicaCAD dataset](https://github.com/facebookresearch/habitat-sim/blob/main/DATASETS.md#replicacad). Download it before running:
+
+```bash
+python -m habitat_sim.utils.datasets_download --uids replica_cad_dataset
+```
+
+<Warning>
+The hierarchical policy requires that `rearrange_stop` be present in the action space. If you define a custom task, make sure to include this action or the `HierarchicalPolicy.__init__` will raise a `ValueError`.
+</Warning>
